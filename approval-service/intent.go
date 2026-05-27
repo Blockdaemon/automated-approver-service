@@ -5,56 +5,16 @@ import (
 	"time"
 )
 
-type TransferIntent struct {
-	OperationType      string    `json:"OperationType"`
-	OperationID        string    `json:"OperationID"`
-	Timestamp          time.Time `json:"Timestamp"`
-	Asset              string    `json:"Asset"`
-	TestNetwork        bool      `json:"TestNetwork"`
-	Source             string    `json:"Source"`
-	MasterKeyName      string    `json:"MasterKeyName"`
-	DestinationType    string    `json:"DestinationType"`
-	DestinationAmounts []struct {
-		Destination   string `json:"Destination"`
-		MasterKeyName string `json:"MasterKeyName"`
-		Amount        string `json:"Amount"`
-	} `json:"DestinationAmounts"`
-	MaxFee string `json:"MaxFee"`
-}
-
-type CallContractIntent struct {
-	OperationType   string    `json:"OperationType"`
-	OperationID     string    `json:"OperationID"`
-	Timestamp       time.Time `json:"Timestamp"`
-	Call            string    `json:"Call"`
-	Asset           string    `json:"Asset"`
-	TestNetwork     bool      `json:"TestNetwork"`
-	Source          string    `json:"Source"`
-	MasterKeyName   string    `json:"MasterKeyName"`
-	ContractAddress string    `json:"ContractAddress"`
-	Amount          string    `json:"Amount"`
-	MaxFee          string    `json:"MaxFee"`
-}
-
-type DeployContractIntent struct {
-	OperationType string    `json:"OperationType"`
-	OperationID   string    `json:"OperationID"`
-	Timestamp     time.Time `json:"Timestamp"`
-	ContractCode  string    `json:"ContractCode"`
-	Asset         string    `json:"Asset"`
-	TestNetwork   bool      `json:"TestNetwork"`
-	Source        string    `json:"Source"`
-	MasterKeyName string    `json:"MasterKeyName"`
-	Amount        string    `json:"Amount"`
-	MaxFee        string    `json:"MaxFee"`
-}
-
+// MakeTransactionIntent mirrors MPA's TransactionIntent JSON (operation type "make transaction").
+// Transfers, contract calls, deploys, and raw-sign flows use this shape via CWP makeTransaction.
 type MakeTransactionIntent struct {
 	OperationType string    `json:"OperationType"`
 	OperationID   string    `json:"OperationID"`
 	InitiatorID   string    `json:"InitiatorID"`
 	InitiatorName string    `json:"InitiatorName"`
 	Timestamp     time.Time `json:"Timestamp"`
+	ChainName     string    `json:"ChainName,omitempty"`
+	CAIP19        string    `json:"CAIP19,omitempty"`
 	Asset         string    `json:"Asset"`
 	TestNetwork   bool      `json:"TestNetwork"`
 	Source        struct {
@@ -70,11 +30,14 @@ type MakeTransactionIntent struct {
 		Address       string `json:"Address,omitempty"`
 		Amount        string `json:"Amount"`
 	} `json:"Destination"`
-	RawTransaction string `json:"RawTransaction,omitempty"`
-	TxHash         string `json:"TxHash,omitempty"`
+	RawTransaction        string `json:"RawTransaction,omitempty"`
+	DecodedRawTransaction string `json:"DecodedRawTransaction,omitempty"`
+	TxHash                string `json:"TxHash,omitempty"`
+	Function              *struct {
+		Name string `json:"Name,omitempty"`
+	} `json:"Function,omitempty"`
 
-	// BlockchainSpec fields are embedded (promoted) in MPA's TransactionIntent,
-	// so they appear at the top level of the JSON, not nested under "BlockchainSpec".
+	// ChainParameters are embedded (promoted) on MPA TransactionIntent, not nested under BlockchainSpec.
 	EVM       *EVMSpec        `json:"EVM,omitempty"`
 	Bitcoin   json.RawMessage `json:"Bitcoin,omitempty"`
 	Substrate json.RawMessage `json:"Substrate,omitempty"`
