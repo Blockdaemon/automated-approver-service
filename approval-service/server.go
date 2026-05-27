@@ -21,12 +21,14 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const operationTypeMakeTransaction = "make transaction"
+
 // Server hosts the HTTP API for the automated approver service.
 // It exposes endpoints that MPA can call to obtain an approval signature
 // for a given enriched intent.
 //
-// This implementation is intentionally simple and is meant to be used as a
-// reference / demo service that teams can extend with their own policy logic.
+// This is a reference implementation for testing. Extend checkMakeTransactionIntent
+// with your own policy rules before any production use.
 type Server struct {
 	echo   *echo.Echo
 	logger zerolog.Logger
@@ -228,12 +230,8 @@ type SignOperationResponse struct {
 // The flow is:
 //  1. Bind and validate the request payload.
 //  2. Decode the enriched intent into a GenericIntent wrapper.
-//  3. Perform basic, operation-type-specific checks against the intent.
-//  4. If all checks pass, sign the raw intent bytes and return the signature.
-//
-// NOTE: The checks in this file are deliberately lightweight and are meant
-// to be a starting point. In a real deployment, teams are expected to
-// extend the per-operation-type checks with their own policy rules.
+//  3. Run checkMakeTransactionIntent against the inner TransactionIntent JSON.
+//  4. If checks pass, sign the raw intent bytes and return the signature.
 func (s *Server) Confirm(c echo.Context) error {
 	var body SignOperationRequest
 	if err := c.Bind(&body); err != nil {
@@ -259,137 +257,44 @@ func (s *Server) Confirm(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	supportedOps := map[string]bool{
-		"transfer":              true,
-		"call smart contract":   true,
-		"deploy smart contract": true,
-		"make transaction":      true,
-	}
-	if !supportedOps[genericIntent.OperationType] {
+	if genericIntent.OperationType != operationTypeMakeTransaction {
 		s.logger.Warn().
 			Str("operationType", genericIntent.OperationType).
 			RawJSON("intent", genericIntent.Intent).
 			Msg("unsupported operation type requested")
-		return echo.NewHTTPError(http.StatusNotImplemented, "unsupported operation type: "+genericIntent.OperationType)
+		return echo.NewHTTPError(
+			http.StatusNotImplemented,
+			"unsupported operation type: "+genericIntent.OperationType+
+				" (this reference service only handles "+operationTypeMakeTransaction+")",
+		)
 	}
 
-	var signature []byte
-	var err error
-
-	// Validate, check, and sign per operation type.
-	// Each case gates signing behind its own checks so that a failed check
-	// prevents the signature from being produced.
-	switch genericIntent.OperationType {
-	case "transfer":
-		var transferIntent TransferIntent
-		if err := json.Unmarshal(genericIntent.Intent, &transferIntent); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-
-		// Fake/demo check: this is where more complex business logic can be
-		// plugged in (e.g. max amount per asset, whitelists, risk scoring, etc).
-		if err := s.checkTransferIntent(transferIntent); err != nil {
-			s.logger.Warn().
-				Err(err).
-				Str("operationType", genericIntent.OperationType).
-				RawJSON("intent", genericIntent.Intent).
-				Msg("transfer intent did not pass automated checks")
-			return echo.NewHTTPError(http.StatusForbidden, err.Error())
-		}
-
-		if len(transferIntent.DestinationAmounts) == 0 {
-			return echo.NewHTTPError(
-				http.StatusBadRequest,
-				"empty destination amounts, op %s "+transferIntent.OperationID,
-			)
-		}
-
-		if err := s.checkTransferIntent(transferIntent); err != nil {
-			s.logger.Warn().
-				Err(err).
-				Str("operationType", genericIntent.OperationType).
-				RawJSON("intent", genericIntent.Intent).
-				Msg("transfer intent did not pass automated checks")
-			return echo.NewHTTPError(http.StatusForbidden, err.Error())
-		}
-
-		intentJSON, _ := json.MarshalIndent(transferIntent, "", "  ")
-		fmt.Printf("\n=== TRANSFER INTENT ===\n%s\n", string(intentJSON))
-
-		signature, err = signIntent(s.privateKey, genericIntent.Intent)
-
-	case "call smart contract":
-		var callContractIntent CallContractIntent
-		if err := json.Unmarshal(genericIntent.Intent, &callContractIntent); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-
-		if err := s.checkCallContractIntent(callContractIntent); err != nil {
-			s.logger.Warn().
-				Err(err).
-				Str("operationType", genericIntent.OperationType).
-				RawJSON("intent", genericIntent.Intent).
-				Msg("call contract intent did not pass automated checks")
-			return echo.NewHTTPError(http.StatusForbidden, err.Error())
-		}
-
-		intentJSON, _ := json.MarshalIndent(callContractIntent, "", "  ")
-		fmt.Printf("\n=== CONTRACT CALL INTENT ===\n%s\n", string(intentJSON))
-
-		signature, err = signIntent(s.privateKey, genericIntent.Intent)
-
-	case "deploy smart contract":
-		var deployContractIntent DeployContractIntent
-		if err := json.Unmarshal(genericIntent.Intent, &deployContractIntent); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-
-		if err := s.checkDeployContractIntent(deployContractIntent); err != nil {
-			s.logger.Warn().
-				Err(err).
-				Str("operationType", genericIntent.OperationType).
-				RawJSON("intent", genericIntent.Intent).
-				Msg("deploy contract intent did not pass automated checks")
-			return echo.NewHTTPError(http.StatusForbidden, err.Error())
-		}
-
-		intentJSON, _ := json.MarshalIndent(deployContractIntent, "", "  ")
-		fmt.Printf("\n=== CONTRACT DEPLOY INTENT ===\n%s\n", string(intentJSON))
-
-		signature, err = signIntent(s.privateKey, genericIntent.Intent)
-
-	case "make transaction":
-		var makeTxIntent MakeTransactionIntent
-		if err := json.Unmarshal(genericIntent.Intent, &makeTxIntent); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-
-		if err := s.checkMakeTransactionIntent(makeTxIntent); err != nil {
-			s.logger.Warn().
-				Err(err).
-				Str("operationType", genericIntent.OperationType).
-				RawJSON("intent", genericIntent.Intent).
-				Msg("make transaction intent did not pass automated checks")
-			return echo.NewHTTPError(http.StatusForbidden, err.Error())
-		}
-
-		intentJSON, _ := json.MarshalIndent(makeTxIntent, "", "  ")
-		fmt.Printf("\n=== MAKE TRANSACTION INTENT ===\n%s\n", string(intentJSON))
-
-		if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
-			if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
-				s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
-			} else if decodedJSON, err := json.MarshalIndent(decoded, "", "  "); err == nil {
-				fmt.Printf("\n=== DECODED RAW TX (PROTO WIRE, CC) ===\n%s\n", string(decodedJSON))
-			}
-		}
-
-		signature, err = signIntent(s.privateKey, genericIntent.Intent)
-
-	default:
-		return echo.NewHTTPError(http.StatusNotImplemented, "unsupported operation type")
+	var makeTxIntent MakeTransactionIntent
+	if err := json.Unmarshal(genericIntent.Intent, &makeTxIntent); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
+	if err := s.checkMakeTransactionIntent(makeTxIntent, genericIntent); err != nil {
+		s.logger.Warn().
+			Err(err).
+			Str("operationType", genericIntent.OperationType).
+			RawJSON("intent", genericIntent.Intent).
+			Msg("make transaction intent did not pass automated checks")
+		return echo.NewHTTPError(http.StatusForbidden, err.Error())
+	}
+
+	intentJSON, _ := json.MarshalIndent(makeTxIntent, "", "  ")
+	fmt.Printf("\n=== MAKE TRANSACTION INTENT ===\n%s\n", string(intentJSON))
+
+	if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
+		if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
+			s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
+		} else if decodedJSON, err := json.MarshalIndent(decoded, "", "  "); err == nil {
+			fmt.Printf("\n=== DECODED RAW TX (PROTO WIRE, CC) ===\n%s\n", string(decodedJSON))
+		}
+	}
+
+	signature, err := signIntent(s.privateKey, genericIntent.Intent)
 	if err != nil {
 		s.logger.Error().
 			Err(err).
@@ -424,68 +329,45 @@ func (s *Server) GetPublicKey(c echo.Context) error {
 	})
 }
 
-// checkTransferIntent contains demo logic for how to inspect a transfer intent.
-// Currently it always approves but logs useful context. Teams can extend this
-// to enforce limits, whitelists, KYC rules, etc.
-func (s *Server) checkTransferIntent(intent TransferIntent) error {
-	s.logger.Info().
-		Str("operation_id", intent.OperationID).
-		Str("asset", intent.Asset).
-		Bool("test_network", intent.TestNetwork).
-		Int("destination_count", len(intent.DestinationAmounts)).
-		Msg("evaluating transfer intent")
-
-	// Example of where a real check might go:
-	//   - Parse intent.DestinationAmounts[i].Amount
-	//   - Enforce maximum notional per operation using RateInfo from GenericIntent
-	// For this demo implementation we always approve.
-	return nil
-}
-
-// checkCallContractIntent contains demo logic for contract call operations.
-func (s *Server) checkCallContractIntent(intent CallContractIntent) error {
-	s.logger.Info().
-		Str("operation_id", intent.OperationID).
-		Str("asset", intent.Asset).
-		Str("contract_address", intent.ContractAddress).
-		Bool("test_network", intent.TestNetwork).
-		Msg("evaluating call contract intent")
-
-	return nil
-}
-
-// checkDeployContractIntent contains demo logic for contract deployment.
-func (s *Server) checkDeployContractIntent(intent DeployContractIntent) error {
-	s.logger.Info().
-		Str("operation_id", intent.OperationID).
-		Str("asset", intent.Asset).
-		Bool("test_network", intent.TestNetwork).
-		Msg("evaluating deploy contract intent")
-
-	return nil
-}
-
-// checkMakeTransactionIntent contains demo logic for "make transaction" operations.
-// MPA promotes SignRawTransactionIntent into this form (TransactionIntent) before
-// sending it to automated approvers. The intent carries the full transaction
-// context including source, destinations, and optional raw transaction bytes.
-func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent) error {
+// checkMakeTransactionIntent is where teams add policy logic before signing.
+// MPA stores CWP TransactionIntent JSON under operation type "make transaction"
+// (including promoted SignRawTransactionIntent and makeTransaction start requests).
+func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent, enriched GenericIntent) error {
 	logEvent := s.logger.Info().
 		Str("operation_id", intent.OperationID).
 		Str("asset", intent.Asset).
+		Str("caip19", intent.CAIP19).
+		Str("chain_name", intent.ChainName).
 		Bool("test_network", intent.TestNetwork).
 		Str("source_master_key", intent.Source.MasterKeyName).
 		Str("source_account", intent.Source.AccountName).
 		Int("destination_count", len(intent.Destination)).
 		Bool("has_raw_tx", intent.RawTransaction != "")
 
+	if intent.Function != nil {
+		logEvent = logEvent.Str("function_name", intent.Function.Name)
+	}
 	if intent.EVM != nil {
 		logEvent = logEvent.
 			Bool("has_evm_spec", true).
 			Str("evm_data", intent.EVM.Data)
 	}
+	if enriched.IntentMetadata.RateInfo.Rate > 0 {
+		logEvent = logEvent.
+			Float64("rate", enriched.IntentMetadata.RateInfo.Rate).
+			Str("rate_to_currency", enriched.IntentMetadata.RateInfo.ToCurrency)
+	}
+	if enriched.Initiator.UserID != "" {
+		logEvent = logEvent.Str("initiator_id", enriched.Initiator.UserID)
+	}
 
 	logEvent.Msg("evaluating make transaction intent")
+
+	// Example policy hooks:
+	//   - Parse intent.Destination[i].Amount and compare to limits
+	//   - Whitelist destination addresses or CAIP19 values
+	//   - Reject raw-sign when RawTransaction is present but TxHash is empty on Canton
+	//   - Use enriched.IntentMetadata.RateInfo for USD notional caps
 
 	return nil
 }
