@@ -2,20 +2,13 @@ package main
 
 import (
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
 	"math/big"
-	"time"
-
-	"github.com/rs/zerolog"
 )
 
 // ECDSASignature holds the ASN.1 structure for ECDSA signatures (r, s)
@@ -96,60 +89,5 @@ func x963PublicKeyToECDSAPublicKey(publicKey []byte) (*ecdsa.PublicKey, error) {
 		Curve: elliptic.P256(),
 		X:     x,
 		Y:     y,
-	}, nil
-}
-
-// selfSignedTLSCertificateFromSeed creates a TLS cert from a seed
-func selfSignedTLSCertificateFromSeed(
-	logger zerolog.Logger,
-	seed []byte,
-	secretManager SecretsManagerAPI,
-) (tls.Certificate, error) {
-	name := "System approval test server"
-	privateKey := ed25519.NewKeyFromSeed(seed)
-	startTime := time.Date(2024, 10, 21, 0, 0, 0, 0, time.UTC)
-	endTime := time.Date(2050, 1, 1, 0, 0, 0, 0, time.UTC)
-	tpl := &x509.Certificate{
-		SerialNumber: big.NewInt(0),
-		Subject:      pkix.Name{CommonName: name},
-		NotBefore:    startTime,
-		NotAfter:     endTime,
-	}
-
-	x509Certificate, err := x509.CreateCertificate(
-		rand.Reader,
-		tpl,
-		tpl,
-		privateKey.Public(),
-		privateKey,
-	)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	asn1Bytes, err := x509.MarshalPKIXPublicKey(
-		privateKey.Public().(ed25519.PublicKey),
-	)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	tlsPubKey := base64.StdEncoding.EncodeToString(asn1Bytes)
-	logger.Info().
-		Str("tls_public_key", tlsPubKey).
-		Msg("TLS public key of the server")
-
-	err = secretManager.PutSecret(
-		tlsPubKey,
-		"sandbox-approval-tls-public-key",
-	)
-
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-
-	return tls.Certificate{
-		Certificate: [][]byte{x509Certificate},
-		PrivateKey:  privateKey,
 	}, nil
 }

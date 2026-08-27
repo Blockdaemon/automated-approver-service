@@ -1,12 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/rs/zerolog"
@@ -22,10 +19,10 @@ import (
 )
 
 const operationTypeMakeTransaction = "make transaction"
+const operationTypeTransfer = "transfer"
 
-// Server hosts the HTTP API for the automated approver service.
-// It exposes endpoints that MPA can call to obtain an approval signature
-// for a given enriched intent.
+// Server polls CWP for pending approvals and signs make-transaction intents.
+// GET /public-key remains for registering the ECDSA P-256 key on the bot user.
 //
 // This is a reference implementation for testing. Extend checkMakeTransactionIntent
 // with your own policy rules before any production use.
@@ -35,8 +32,11 @@ type Server struct {
 
 	cfg ServerConfig
 
-	tlsCert    *tls.Certificate
-	privateKey *ecdsa.PrivateKey
+	privateKey   *ecdsa.PrivateKey
+	cwp          approvalAPI
+	pollInterval time.Duration
+	pollCancel   context.CancelFunc
+	checkHook    func(MakeTransactionIntent, GenericIntent) error
 }
 
 func newServer(cfg ServerConfig) (*Server, error) {
@@ -72,27 +72,23 @@ func newServer(cfg ServerConfig) (*Server, error) {
 	if cfg.SecretManager != SecretsManagerLocal {
 		cfg.PrivateKey, err = secretManager.GetSecret("sandbox-approval-tls-private-key")
 		if err != nil {
-			return nil, fmt.Errorf("failed to get tls private key: %s", err)
+			return nil, fmt.Errorf("failed to get signing private key: %s", err)
 		}
 
-		cfg.TLSPrivateKeySeed, err = secretManager.GetSecret("sandbox-approval-key-seed")
+		cfg.APIKey, err = secretManager.GetSecret("sandbox-approval-cwp-api-key")
 		if err != nil {
-			return nil, fmt.Errorf("failed to get key seed: %s", err)
+			return nil, fmt.Errorf("failed to get cwp api key: %s", err)
 		}
 	}
 
-	var tlsCert *tls.Certificate
-	if cfg.TLSPrivateKeySeed != "" {
-		decodedSeed, err := cfg.TLSPrivateKeySeedDecoded()
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode tls private key: %s", err)
-		}
-
-		cert, err := selfSignedTLSCertificateFromSeed(lgr, decodedSeed, secretManager)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create tls certificate: %s", err)
-		}
-		tlsCert = &cert
+	if v := os.Getenv("CWP_BASE_URL"); v != "" {
+		cfg.CWPBaseURL = v
+	}
+	if v := os.Getenv("CWP_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+	if v := os.Getenv("CWP_PRIVATE_KEY"); v != "" {
+		cfg.PrivateKey = v
 	}
 
 	privateKeyDer, err := cfg.PrivateKeyDecoded()
@@ -104,30 +100,38 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("failed to parse pk: %s", err)
 	}
 
-	publicKey := base64.StdEncoding.EncodeToString(
-		getPublicKey(privateKey),
-	)
-	fmt.Printf("signature_verification_key\":\"%s\"\n", publicKey)
+	fmt.Printf("signature_verification_key\":\"%s\"\n",
+		base64.StdEncoding.EncodeToString(getPublicKey(privateKey)))
 
-	err = secretManager.PutSecret(
-		publicKey,
-		"sandbox-approval-signature-verification-key",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to put aws secret sandbox-approval-signature-verification-key: %s", err)
+	if strings.TrimSpace(cfg.CWPBaseURL) == "" {
+		return nil, fmt.Errorf("cwp_base_url is required")
+	}
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or sandbox-approval-cwp-api-key)")
+	}
+
+	pollInterval := 10 * time.Second
+	if cfg.PollInterval != "" {
+		pollInterval, err = time.ParseDuration(cfg.PollInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid poll_interval: %w", err)
+		}
+		if pollInterval <= 0 {
+			return nil, fmt.Errorf("poll_interval must be greater than zero")
+		}
 	}
 
 	server := Server{
-		cfg:        cfg,
-		echo:       echoInstance,
-		logger:     lgr,
-		privateKey: privateKey,
-		tlsCert:    tlsCert,
+		cfg:          cfg,
+		echo:         echoInstance,
+		logger:       lgr,
+		privateKey:   privateKey,
+		cwp:          newCWPClient(cfg.CWPBaseURL, cfg.APIKey),
+		pollInterval: pollInterval,
 	}
 
-	// Routes
-	echoInstance.POST("/confirm", server.Confirm)
 	echoInstance.GET("/public-key", server.GetPublicKey)
+	echoInstance.GET("/health", server.Health)
 
 	return &server, nil
 }
@@ -138,19 +142,21 @@ type ServerConfig struct {
 	// ASN.1 DER encoded private key
 	PrivateKey string `json:"private_key"`
 
-	// TLSPrivateKeySeed A base64 32-byte seed key which will be used for
-	// TLS certificate creation
-	TLSPrivateKeySeed string `json:"tls_private_key_seed"`
-
 	SecretManager string `json:"secret_manager"`
+
+	// CWPBaseURL is the CWP approvals root, including the /api/cwp prefix on
+	// Institutional Vault (e.g. https://vault.example.com/api/cwp).
+	CWPBaseURL string `json:"cwp_base_url"`
+
+	// APIKey is a cwp_ key issued for the bot user's email.
+	APIKey string `json:"api_key"`
+
+	// PollInterval is a Go duration (default 10s).
+	PollInterval string `json:"poll_interval"`
 }
 
 func (s ServerConfig) PrivateKeyDecoded() ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s.PrivateKey)
-}
-
-func (s ServerConfig) TLSPrivateKeySeedDecoded() ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s.TLSPrivateKeySeed)
 }
 
 // setup registers the handlers for and adds loggers/middlewares to
@@ -187,136 +193,13 @@ func setup(
 }
 
 func (s *Server) Serve() error {
-	// Running TLS if cert is available
-	if s.tlsCert != nil {
-		server := http.Server{
-			Addr:      fmt.Sprintf(":%d", s.cfg.Port),
-			Handler:   s.echo, // set Echo as handler
-			TLSConfig: newTLSConfig(*s.tlsCert),
-		}
+	pollCtx, cancel := context.WithCancel(context.Background())
+	s.pollCancel = cancel
+	go s.pollLoop(pollCtx)
 
-		// TLS server started, no need to log port
-		err := server.ListenAndServeTLS("", "")
-		if !errors.Is(err, http.ErrServerClosed) {
-			return err
-		}
-
-		return nil
-	}
-
-	// Server started, no need to log port
-	return s.echo.Start(fmt.Sprintf(":%d", s.cfg.Port))
-}
-
-type SignOperationRequest struct {
-	EnrichedIntent []byte
-	MPASignature   []byte
-}
-
-func (s SignOperationRequest) Validate() error {
-	return validation.ValidateStruct(&s,
-		validation.Field(&s.EnrichedIntent, validation.Required),
-		// TODO: Uncomment this when MPA is updated to require the signature
-		//validation.Field(&s.MPASignature, validation.Required),
-	)
-}
-
-type SignOperationResponse struct {
-	Confirmed bool
-	Signature []byte
-}
-
-// Confirm is the main entry point used by MPA to request an approval.
-// The flow is:
-//  1. Bind and validate the request payload.
-//  2. Decode the enriched intent into a GenericIntent wrapper.
-//  3. Run checkMakeTransactionIntent against the inner TransactionIntent JSON.
-//  4. If checks pass, sign the raw intent bytes and return the signature.
-func (s *Server) Confirm(c echo.Context) error {
-	var body SignOperationRequest
-	if err := c.Bind(&body); err != nil {
-		s.logger.Error().
-			Err(err).
-			Msg("failed to bind SignOperationRequest")
-		return err
-	}
-
-	if err := body.Validate(); err != nil {
-		return err
-	}
-
-	var genericIntent GenericIntent
-
-	// EnrichedIntent is a generic wrapper which contains the actual intent
-	// under GenericIntent.Intent and some metadata (rate info, initiator, etc).
-	if err := json.Unmarshal(body.EnrichedIntent, &genericIntent); err != nil {
-		s.logger.Error().
-			Err(err).
-			RawJSON("enriched_intent", body.EnrichedIntent).
-			Msg("failed to unmarshal EnrichedIntent into GenericIntent")
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-	}
-
-	if genericIntent.OperationType != operationTypeMakeTransaction {
-		s.logger.Warn().
-			Str("operationType", genericIntent.OperationType).
-			RawJSON("intent", genericIntent.Intent).
-			Msg("unsupported operation type requested")
-		return echo.NewHTTPError(
-			http.StatusNotImplemented,
-			"unsupported operation type: "+genericIntent.OperationType+
-				" (this reference service only handles "+operationTypeMakeTransaction+")",
-		)
-	}
-
-	var makeTxIntent MakeTransactionIntent
-	if err := json.Unmarshal(genericIntent.Intent, &makeTxIntent); err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-	}
-
-	if err := s.checkMakeTransactionIntent(makeTxIntent, genericIntent); err != nil {
-		s.logger.Warn().
-			Err(err).
-			Str("operationType", genericIntent.OperationType).
-			RawJSON("intent", genericIntent.Intent).
-			Msg("make transaction intent did not pass automated checks")
-		return echo.NewHTTPError(http.StatusForbidden, err.Error())
-	}
-
-	intentJSON, _ := json.MarshalIndent(makeTxIntent, "", "  ")
-	fmt.Printf("\n=== MAKE TRANSACTION INTENT ===\n%s\n", string(intentJSON))
-
-	if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
-		if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
-			s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
-		} else if decodedJSON, err := json.MarshalIndent(decoded, "", "  "); err == nil {
-			fmt.Printf("\n=== DECODED RAW TX (PROTO WIRE, CC) ===\n%s\n", string(decodedJSON))
-		}
-	}
-
-	signature, err := signIntent(s.privateKey, genericIntent.Intent)
-	if err != nil {
-		s.logger.Error().
-			Err(err).
-			RawJSON("intent", genericIntent.Intent).
-			Msg("failed to sign intent")
-		return echo.NewHTTPError(http.StatusInternalServerError, err)
-	}
-
-	// Print signature information
-	signatureB64 := base64.StdEncoding.EncodeToString(signature)
-	fmt.Printf("\n=== SIGNATURE (APPROVED) ===\n")
-	fmt.Printf("Signature (Base64): %s\n", signatureB64)
-	fmt.Printf("Signature (Hex): %x\n", signature)
-	fmt.Printf("========================\n\n")
-
-	return c.JSON(
-		http.StatusOK,
-		&SignOperationResponse{
-			Confirmed: true,
-			Signature: signature,
-		},
-	)
+	err := s.echo.Start(fmt.Sprintf(":%d", s.cfg.Port))
+	cancel()
+	return err
 }
 
 type GetPublicKey struct {
@@ -329,10 +212,19 @@ func (s *Server) GetPublicKey(c echo.Context) error {
 	})
 }
 
+func (s *Server) Health(c echo.Context) error {
+	return c.NoContent(http.StatusOK)
+}
+
 // checkMakeTransactionIntent is where teams add policy logic before signing.
 // MPA stores CWP TransactionIntent JSON under operation type "make transaction"
 // (including promoted SignRawTransactionIntent and makeTransaction start requests).
 func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent, enriched GenericIntent) error {
+	if s.checkHook != nil {
+		if err := s.checkHook(intent, enriched); err != nil {
+			return err
+		}
+	}
 	logEvent := s.logger.Info().
 		Str("operation_id", intent.OperationID).
 		Str("asset", intent.Asset).
@@ -359,6 +251,8 @@ func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent, enrich
 	}
 	if enriched.Initiator.UserID != "" {
 		logEvent = logEvent.Str("initiator_id", enriched.Initiator.UserID)
+	} else if intent.InitiatorID != "" {
+		logEvent = logEvent.Str("initiator_id", intent.InitiatorID)
 	}
 
 	logEvent.Msg("evaluating make transaction intent")
@@ -391,21 +285,4 @@ func getPublicKey(privKey *ecdsa.PrivateKey) []byte {
 		xBytesPadded,
 		yBytesPadded,
 	)
-}
-
-func newTLSConfig(cert tls.Certificate) *tls.Config {
-	tlsConfig := tls.Config{
-		MinVersion: uint16(tls.VersionTLS12),
-		MaxVersion: uint16(tls.VersionTLS13),
-		CipherSuites: []uint16{
-			tls.TLS_CHACHA20_POLY1305_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-		},
-		Certificates: []tls.Certificate{cert},
-	}
-
-	return &tlsConfig
 }

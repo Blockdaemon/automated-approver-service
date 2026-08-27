@@ -7,6 +7,8 @@ import (
 conf.#Config & {
 	port: 9294
 	private_key: "private_key"
-	tls_private_key_seed: "private_key_seed"
 	secret_manager: "secretsmanager"
+	cwp_base_url: "https://vault.example.com/api/cwp"
+	api_key: "cwp_..."
+	poll_interval: "10s"
 }
