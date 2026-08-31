@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine3.20 AS build
+FROM golang:1.24-alpine3.20 AS build
 RUN apk --no-cache add git file gcc musl-dev ca-certificates
 
 # Create a non-root user

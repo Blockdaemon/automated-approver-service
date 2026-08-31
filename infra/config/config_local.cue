@@ -7,6 +7,8 @@ import (
 conf.#Config & {
 	port: 9294
 	private_key: "private_key"
-	tls_private_key_seed: ""
 	secret_manager: "local"
+	cwp_base_url: "https://<sandbox>.api.dev.blockdaemon-wallet.com/api/cwp"
+	api_key: "cwp_..."
+	poll_interval: "10s"
 }

@@ -1,105 +1,49 @@
-# Institutional Vault Automated Approver Service - Reference Implementation
+# Automated Approver Service
 
-## Overview
+Reference implementation for testing CWP fetch-based approvals. The service polls pending operations, ECDSA P-256-signs `make transaction` and `transfer` intents, and posts approve or reject with a `cwp_` API key. Other operation types are skipped. Polling (default `10s`) will later be replaced by CWP WebSocket events (`GET /api/cwp/events`).
 
-The Automated Approver Service is a lightweight approval server and **reference implementation for testing** MPC Policy Authority (MPA) approval workflows. It signs `make transaction` intents (MPA `TransactionIntent` JSON) with ECDSA P-256.
+Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https://github.com/Blockdaemon/automated-approver-service/releases) (built on version tags).
 
-CWP routes such as `POST /api/cwp/operations/start/makeTransaction` store this shape.
+## Setup
 
-## Features
-
-- **Intent approval**: Signs `make transaction` enriched intents from MPA
-- **Cryptographic signing**: ECDSA P-256 signature over the inner intent bytes
-- **TLS support**: Optional TLS with Ed25519 certificates
-- **Chain parameters**: Top-level `EVM`, `Canton`, and related fields (promoted `ChainParameters`, not a nested `BlockchainSpec` object)
-- **AWS integration**: Secrets Manager integration
-
-### Components
-
-1. **Approval Server** (`approval-service/`): Core Go service that handles approval requests
-2. **Infrastructure** (`infra/`): Service configuration files
-3. **Configuration** (`cue.mod/`): CUE schemas for configuration validation
-
-## Prerequisites
-
-- Go 1.23 or higher
-- Docker (optional, for containerized deployment)
+1. Create a Vault user and add them to the transaction-restriction approver group.
+2. Generate a keypair (`./automated-approver-service -genkey`) and register the public key on that user (`GET /public-key` or `-genkey` output).
+3. Issue a `cwp_` API key for that user's email. The pending queue is that user's list, not a group inbox.
 
 ## Configuration
 
-For local development, configure via `infra/config/config_local.cue`:
+Local: `infra/config/config_local.cue`. Env overrides CUE and AWS: `CWP_BASE_URL`, `CWP_API_KEY`, `CWP_PRIVATE_KEY`.
 
-- `port`: Server port (default: 9294)
-- `private_key`: Base64-encoded ASN.1 DER private key for signing https://go.dev/play/p/hvTalsJgu2T
-- `tls_private_key_seed`: Base64-encoded 32-byte seed for TLS certificate https://go.dev/play/p/t7OAtd0-ilL
-- `secret_manager`: Use `"local"` for local development
+| Field | Notes |
+| --- | --- |
+| `cwp_base_url` | CWP root, including `/api/cwp` on Institutional Vault |
+| `api_key` | `cwp_` key. Local: `CWP_API_KEY`. AWS: `sandbox-approval-cwp-api-key` |
+| `private_key` | Base64 ASN.1 DER signing key. AWS: `sandbox-approval-tls-private-key` |
+| `poll_interval` | Go duration, default `10s` |
+| `port` | Local HTTP for `/public-key` and `/health` (default 9294) |
+| `secret_manager` | `"local"` or `"secretsmanager"` |
 
-Otherwise, use AWS Secrets Manager:
+The signature verification key is the uncompressed P-256 public key derived from `private_key`. It is not a secret.
 
-Required secrets names:
-
-- `sandbox-approval-tls-private-key`: TLS private key
-- `sandbox-approval-key-seed`: TLS certificate seed
-- `sandbox-approval-tls-public-key`: TLS public key (auto-generated)
-- `sandbox-approval-signature-verification-key`: Signature verification key (auto-generated)
-
-## Deployment
-
-Build and run the container:
+```bash
+export CWP_API_KEY='cwp_...'
+export CWP_PRIVATE_KEY='...'   # from -genkey
+./automated-approver-service -configFile=./infra/config/config_local.cue -once
+```
 
 ```bash
 docker build -f approval-service/Dockerfile -t approval-service:latest .
-docker run -p 9294:9294 \
-  -v $(pwd)/infra/config:/config \
-  approval-service:latest \
-  --configFile=/config/config_local.cue
+docker run -p 9294:9294 -v $(pwd)/infra/config:/config \
+  approval-service:latest --configFile=/config/config_local.cue
 ```
 
-The service will start on `http://localhost:9294`.
+## Custom approval checks
 
-## API Endpoints
+Each listed `make transaction` entry is decoded to the stored intent, unmarshaled, passed through `checkMakeTransactionIntent`, then signed. Wallet UI `transfer` operations are signed the same way without that check. Other types are skipped (not rejected).
 
-### POST /confirm
+Customer policy hooks go in `checkMakeTransactionIntent` (`approval-service/server.go`). Return an error to reject via CWP; return `nil` to approve and sign. Do not modify the decoded intent bytes; CWP verifies the signature against the stored intent. List entries do not include EnrichedIntent rate metadata; use fields on `MakeTransactionIntent` (including `InitiatorID`).
 
-Approves and signs a transaction intent when `EnrichedIntent.OperationType` is `make transaction`.
-
-**Request:**
-
-```json
-{
-  "EnrichedIntent": "<base64-encoded-intent-bytes>",
-  "MPASignature": "<base64-encoded-signature-bytes>"
-}
-```
-
-**Response:**
-
-```json
-{
-  "Confirmed": true,
-  "Signature": "<base64-encoded-signature-bytes>"
-}
-```
-
-### GET /public-key
-
-Returns the server's public key for signature verification.
-
-**Response:**
-
-```json
-{
-  "public_key": "<65-byte-uncompressed-public-key>"
-}
-```
-
-## Custom approval logic
-
-`POST /confirm` unmarshals the enriched intent, runs `checkMakeTransactionIntent`, and only then signs `genericIntent.Intent` (the inner JSON exactly as MPA stored it).
-
-Extend `checkMakeTransactionIntent` in `approval-service/server.go`. Return an error to reject (HTTP 403); return `nil` to allow signing.
-
-Example: cap outbound amounts on structured transfers (non-raw-sign intents with `Destination` populated):
+The demo check always approves (it only logs). Example: cap outbound amounts on structured transfers (`Destination` populated):
 
 ```go
 func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent, enriched GenericIntent) error {
@@ -125,24 +69,4 @@ func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent, enrich
 }
 ```
 
-`Confirm` calls the check before signing:
-
-```go
-if err := s.checkMakeTransactionIntent(makeTxIntent, genericIntent); err != nil {
-	return echo.NewHTTPError(http.StatusForbidden, err.Error())
-}
-signature, err := signIntent(s.privateKey, genericIntent.Intent)
-```
-
-Do not modify `genericIntent.Intent` after checks pass; the signature must match MPA's stored bytes.
-
-## Security considerations
-
-**Important:** This is a **reference implementation for testing**. Harden it before production use.
-
-- The demo `checkMakeTransactionIntent` approves every request (it only logs context).
-- **Private signing keys are not written to logs**, but the reference server prints **public** material and request payloads to stdout for debugging:
-  - At startup: base64 signature verification public key (`newServer`).
-  - On each approval: full intent JSON, optional decoded Canton raw tx, and the produced signature (`fmt.Printf` in `Confirm`).
-- Failed checks may log the intent via structured logging (`RawJSON("intent", ...)`).
-- Remove or gate debug `fmt.Printf` output in production deployments.
+This is a reference implementation for testing. The process prints public keys and intent payloads to stdout; do not use as-is in production.
