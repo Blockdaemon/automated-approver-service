@@ -158,6 +158,18 @@ func TestCWPClient_ListNullBody(t *testing.T) {
 	require.Empty(t, entries)
 }
 
+func TestCWPClient_RejectOmitsUserID(t *testing.T) {
+	var gotBody map[string]json.RawMessage
+	srv := newCWPTestServer(t, http.MethodPost, "/approvals/reject", http.StatusNoContent, nil, func(_ *http.Request, body []byte) {
+		require.NoError(t, json.Unmarshal(body, &gotBody))
+	})
+	c := newCWPClient(srv.URL, "cwp_testkey")
+	require.NoError(t, c.Reject(context.Background(), "op-reject"))
+	_, hasUser := gotBody["UserID"]
+	require.False(t, hasUser)
+	require.Contains(t, gotBody, "OperationID")
+}
+
 func newCWPTestServer(
 	t *testing.T,
 	method, path string,

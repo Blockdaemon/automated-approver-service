@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: GOWORK=off go test ./approval-service/ -count=1
+
+      - name: Build
+        run: GOWORK=off go build ./approval-service
+
+      - name: Vet
+        run: GOWORK=off go vet ./...
