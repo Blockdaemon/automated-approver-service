@@ -2,10 +2,12 @@
 
 Reference implementation for testing CWP fetch-based approvals. The service polls pending operations, ECDSA P-256-signs `make transaction` and `transfer` intents, and posts approve or reject with a `cwp_` API key. Other operation types are skipped. Polling (default `10s`) will later be replaced by CWP WebSocket events (`GET /api/cwp/events`).
 
+Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https://github.com/Blockdaemon/automated-approver-service/releases) (built on version tags).
+
 ## Setup
 
-1. Create a Vault user and add them to the V2 transaction-restriction approver group.
-2. Generate a keypair (`go run ./approval-service -genkey`) and register the public key on that user (`GET /public-key` or `-genkey` output).
+1. Create a Vault user and add them to the transaction-restriction approver group.
+2. Generate a keypair (`./automated-approver-service -genkey`) and register the public key on that user (`GET /public-key` or `-genkey` output).
 3. Issue a `cwp_` API key for that user's email. The pending queue is that user's list, not a group inbox.
 
 ## Configuration
@@ -26,7 +28,7 @@ The signature verification key is the uncompressed P-256 public key derived from
 ```bash
 export CWP_API_KEY='cwp_...'
 export CWP_PRIVATE_KEY='...'   # from -genkey
-go run ./approval-service -configFile=./infra/config/config_local.cue -once
+./automated-approver-service -configFile=./infra/config/config_local.cue -once
 ```
 
 ```bash
@@ -34,8 +36,6 @@ docker build -f approval-service/Dockerfile -t approval-service:latest .
 docker run -p 9294:9294 -v $(pwd)/infra/config:/config \
   approval-service:latest --configFile=/config/config_local.cue
 ```
-
-Requires Go 1.23+.
 
 ## Custom approval checks
 
