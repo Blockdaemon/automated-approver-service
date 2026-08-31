@@ -21,7 +21,7 @@ jobs:
         run: GOWORK=off go test ./approval-service/ -count=1
 
       - name: Build
-        run: GOWORK=off go build ./approval-service
+        run: GOWORK=off go build -o /tmp/automated-approver-service ./approval-service
 
       - name: Vet
         run: GOWORK=off go vet ./...
