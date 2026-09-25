@@ -10,9 +10,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
-	"cuelang.org/go/cue/cuecontext"
+	"gopkg.in/yaml.v3"
 )
 
 func main() {
@@ -21,67 +20,60 @@ func main() {
 	}
 }
 
-func loadFromCue(configpath, schemapath string, v interface{}) error {
-	// Load in configuration file
-	configBytes, err := os.ReadFile(configpath)
+func loadConfig(path string) (ServerConfig, error) {
+	configBytes, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("os.ReadFile: %w", err)
-	}
-	err = formatCueConfigBytes(&configBytes)
-	if err != nil {
-		return fmt.Errorf("formatting config: %w", err)
-	}
-	// Load in schema file
-	schemaBytes, err := os.ReadFile(schemapath)
-	if err != nil {
-		return fmt.Errorf("os.ReadFile: %w", err)
-	}
-	err = formatSchemaBytes(&schemaBytes)
-	if err != nil {
-		return fmt.Errorf("formatting config: %w", err)
+		return ServerConfig{}, fmt.Errorf("read config: %w", err)
 	}
 
-	// Append bytes into a single array representing a new .cue file
-	allBytes := append(schemaBytes[:], configBytes...)
-
-	// Compile the bytes - consists of validation and default value evaluation
-	ctx := cuecontext.New()
-	val := ctx.CompileBytes(allBytes)
-	if err := val.Err(); err != nil {
-		return fmt.Errorf("cue.Context.CompileBytes: %w", err)
+	var cfg ServerConfig
+	if err := yaml.Unmarshal(configBytes, &cfg); err != nil {
+		return ServerConfig{}, fmt.Errorf("parse config: %w", err)
 	}
-	// Unmarshal data into config
-	return val.Value().Decode(v)
+	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		return ServerConfig{}, err
+	}
+	return cfg, nil
 }
 
-func formatCueConfigBytes(cb *[]byte) error {
-	for i, b := range *cb {
-		if b == 35 {
-			*cb = (*cb)[i:]
-			break
-		}
+func (c *ServerConfig) applyDefaults() {
+	if c.Port == 0 {
+		c.Port = 9294
 	}
-	configString := strings.ReplaceAll(string(*cb), "conf.", "")
-	*cb = []byte(configString)
-	return nil
+	if c.SecretManager == "" {
+		c.SecretManager = SecretsManagerLocal
+	}
+	if c.PollInterval == "" {
+		c.PollInterval = "10s"
+	}
+	if c.LogLevel == "" {
+		c.LogLevel = "debug"
+	}
 }
 
-// formatSchemaBytes appends a byte for a newline character to the end of the schema bytes array
-func formatSchemaBytes(sb *[]byte) error {
-	*sb = append(*sb, []byte("\n")...)
+func (c ServerConfig) validate() error {
+	if c.Port < 0 || c.Port > 65535 {
+		return fmt.Errorf("port must be between 0 and 65535")
+	}
+	switch c.SecretManager {
+	case SecretsManagerLocal, SecretsManagerAWS:
+	default:
+		return fmt.Errorf("secret_manager must be %q or %q", SecretsManagerLocal, SecretsManagerAWS)
+	}
+	switch c.LogLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("log_level must be debug, info, warn, or error")
+	}
 	return nil
 }
 
 func run() error {
 	configFile := flag.String(
 		"configFile",
-		"./infra/config/config_local.cue",
-		"path to CUE configuration",
-	)
-	schemaFile := flag.String(
-		"schemaFile",
-		"./cue.mod/approval-service/schema.cue",
-		"path to CUE schema to validate configFile against",
+		"./config.yaml",
+		"path to YAML configuration",
 	)
 	genKey := flag.Bool("genkey", false, "print a new P-256 private_key and public_key, then exit")
 	once := flag.Bool("once", false, "poll CWP approvals once and exit")
@@ -91,8 +83,8 @@ func run() error {
 		return printGeneratedKey()
 	}
 
-	var cfg ServerConfig
-	if err := loadFromCue(*configFile, *schemaFile, &cfg); err != nil {
+	cfg, err := loadConfig(*configFile)
+	if err != nil {
 		return err
 	}
 

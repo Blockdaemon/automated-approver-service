@@ -146,3 +146,54 @@ func truncate(b []byte, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// resolveUserFromIV calls IV GET /api/users/info to resolve the API-key
+// owner email. cwpBaseURL is the CWP root (e.g. https://vault.example.com/api/cwp);
+// the function strips the /api/cwp suffix to reach the wallet API.
+func resolveUserFromIV(cwpBaseURL, apiKey string) (string, error) {
+	origin := cwpBaseURL
+	for _, suffix := range []string{"/api/cwp", "/api/cwp/"} {
+		if trimmed := strings.TrimSuffix(origin, suffix); trimmed != origin {
+			origin = trimmed
+			break
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultHTTPTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/api/users/info", nil)
+	if err != nil {
+		return "", err
+	}
+	token := apiKey
+	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
+		token = "Bearer " + token
+	}
+	req.Header.Set("Authorization", token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("GET /api/users/info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET /api/users/info: status %d: %s", resp.StatusCode, truncate(body, 256))
+	}
+
+	var info struct {
+		Email *string `json:"Email"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		return "", fmt.Errorf("GET /api/users/info: decode: %w", err)
+	}
+	if info.Email == nil || *info.Email == "" {
+		return "", fmt.Errorf("GET /api/users/info: response missing Email field")
+	}
+	return *info.Email, nil
+}

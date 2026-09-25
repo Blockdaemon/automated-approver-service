@@ -38,13 +38,14 @@ type MakeTransactionIntent struct {
 	} `json:"Function,omitempty"`
 
 	// ChainParameters are embedded (promoted) on MPA TransactionIntent, not nested under BlockchainSpec.
-	EVM       *EVMSpec        `json:"EVM,omitempty"`
-	Bitcoin   json.RawMessage `json:"Bitcoin,omitempty"`
-	Substrate json.RawMessage `json:"Substrate,omitempty"`
-	Solana    json.RawMessage `json:"Solana,omitempty"`
-	TVM       json.RawMessage `json:"TVM,omitempty"`
-	Canton    json.RawMessage `json:"Canton,omitempty"`
-	Stellar   json.RawMessage `json:"Stellar,omitempty"`
+	EVM      *EVMSpec        `json:"EVM,omitempty"`
+	Bitcoin  json.RawMessage `json:"Bitcoin,omitempty"`
+	Polkadot json.RawMessage `json:"Polkadot,omitempty"`
+	Solana   json.RawMessage `json:"Solana,omitempty"`
+	TVM      json.RawMessage `json:"TVM,omitempty"`
+	Canton   json.RawMessage `json:"Canton,omitempty"`
+	Stellar  json.RawMessage `json:"Stellar,omitempty"`
+	XRP      json.RawMessage `json:"XRP,omitempty"`
 }
 
 type EVMSpec struct {
@@ -53,6 +54,16 @@ type EVMSpec struct {
 	MaxFeePerGas         json.Number `json:"MaxFeePerGas,omitempty"`
 	Nonce                json.Number `json:"Nonce,omitempty"`
 	Data                 string      `json:"Data,omitempty"`
+}
+
+// extractInitiatorID pulls just the InitiatorID from raw intent JSON without
+// fully unmarshaling the struct. Returns "" when the field is absent or empty.
+func extractInitiatorID(intentBytes []byte) string {
+	var envelope struct {
+		InitiatorID string `json:"InitiatorID"`
+	}
+	_ = json.Unmarshal(intentBytes, &envelope)
+	return envelope.InitiatorID
 }
 
 type GenericIntent struct {

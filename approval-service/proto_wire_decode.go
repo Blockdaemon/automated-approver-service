@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	damlv2 "github.com/digital-asset/dazl-client/v8/go/api/com/daml/ledger/api/v2"
 	"github.com/digital-asset/dazl-client/v8/go/api/com/daml/ledger/api/v2/interactive"
 )
 
@@ -115,7 +116,7 @@ func decodeInteractiveProtoToJSONable(b []byte) (decoded any, ok bool) {
 		{"Metadata", func() proto.Message { return &interactive.Metadata{} }},
 		{"PartySignatures", func() proto.Message { return &interactive.PartySignatures{} }},
 		{"SinglePartySignatures", func() proto.Message { return &interactive.SinglePartySignatures{} }},
-		{"Signature", func() proto.Message { return &interactive.Signature{} }},
+		{"Signature", func() proto.Message { return &damlv2.Signature{} }},
 	}
 
 	bestScore := 0

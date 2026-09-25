@@ -134,6 +134,71 @@ func TestPollOnce_ProcessesListedOps(t *testing.T) {
 	require.Equal(t, "op-1", api.approvedOp)
 }
 
+func TestProcessEntry_ConfirmerOnlySkipsOtherInitiator(t *testing.T) {
+	b64, _ := makeTxIntentB64(t) // InitiatorID = "bot@example.com"
+	api := &fakeApprovalAPI{}
+	s := testServer(t, api)
+	s.confirmerOnly = true
+	s.selfUserID = "someone-else@example.com"
+
+	err := s.processEntry(context.Background(), approvalListEntry{
+		OperationID:   "op-skip",
+		OperationType: operationTypeMakeTransaction,
+		Intent:        b64,
+	})
+	require.NoError(t, err)
+	require.Empty(t, api.approvedOp, "should not approve when initiator is not self")
+	require.Empty(t, api.rejectedOp, "should not reject when initiator is not self")
+}
+
+func TestProcessEntry_ConfirmerOnlyApprovesSelf(t *testing.T) {
+	b64, intent := makeTxIntentB64(t) // InitiatorID = "bot@example.com"
+	api := &fakeApprovalAPI{}
+	s := testServer(t, api)
+	s.confirmerOnly = true
+	s.selfUserID = "bot@example.com"
+
+	err := s.processEntry(context.Background(), approvalListEntry{
+		OperationID:   "op-self",
+		OperationType: operationTypeMakeTransaction,
+		Intent:        b64,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "op-self", api.approvedOp)
+	require.NoError(t, verifySignature(intent, getPublicKey(s.privateKey), api.approvedSig))
+}
+
+func TestProcessEntry_ConfirmerOnlyCaseInsensitive(t *testing.T) {
+	b64, _ := makeTxIntentB64(t) // InitiatorID = "bot@example.com"
+	api := &fakeApprovalAPI{}
+	s := testServer(t, api)
+	s.confirmerOnly = true
+	s.selfUserID = "BOT@EXAMPLE.COM"
+
+	err := s.processEntry(context.Background(), approvalListEntry{
+		OperationID:   "op-case",
+		OperationType: operationTypeMakeTransaction,
+		Intent:        b64,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "op-case", api.approvedOp)
+}
+
+func TestProcessEntry_DefaultModeApprovesAllInitiators(t *testing.T) {
+	b64, _ := makeTxIntentB64(t)
+	api := &fakeApprovalAPI{}
+	s := testServer(t, api)
+	// confirmerOnly defaults to false
+
+	err := s.processEntry(context.Background(), approvalListEntry{
+		OperationID:   "op-any",
+		OperationType: operationTypeMakeTransaction,
+		Intent:        b64,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "op-any", api.approvedOp)
+}
+
 func TestCWPClient_ApproveOmitsUserID(t *testing.T) {
 	var gotBody map[string]json.RawMessage
 	var gotAuth string
