@@ -89,12 +89,12 @@ func newServer(cfg ServerConfig) (*Server, error) {
 	}
 
 	if cfg.SecretManager != SecretsManagerLocal {
-		cfg.PrivateKey, err = secretManager.GetSecret("sandbox-approval-tls-private-key")
+		cfg.PrivateKey, err = secretManager.GetSecret("approver-service-tls-private-key")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get signing private key: %s", err)
 		}
 
-		cfg.APIKey, err = secretManager.GetSecret("sandbox-approval-cwp-api-key")
+		cfg.APIKey, err = secretManager.GetSecret("approver-service-cwp-api-key")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get cwp api key: %s", err)
 		}
@@ -133,7 +133,7 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("cwp_base_url is required")
 	}
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or sandbox-approval-cwp-api-key)")
+		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or approver-service-cwp-api-key)")
 	}
 
 	pollInterval := 10 * time.Second

@@ -11,8 +11,8 @@ import (
 )
 
 func TestAzureSecretName(t *testing.T) {
-	require.Equal(t, "sandbox-approval-cwp-api-key", azureSecretName("sandbox-approval-cwp-api-key"))
-	require.Equal(t, "sandbox-approval-tls-private-key", azureSecretName("sandbox.approval_tls.private_key"))
+	require.Equal(t, "approver-service-cwp-api-key", azureSecretName("approver-service-cwp-api-key"))
+	require.Equal(t, "approver-service-tls-private-key", azureSecretName("approver.service_tls.private_key"))
 }
 
 func TestResolveKeyVaultURL_EnvOverridesConfig(t *testing.T) {
@@ -58,13 +58,13 @@ func TestSecretClientAzure_GetAndPut(t *testing.T) {
 	fake := &fakeKeyVault{value: "cwp_from_vault"}
 	client := &SecretClientAzure{Svc: fake, Logger: zerolog.Nop()}
 
-	got, err := client.GetSecret("sandbox.approval_cwp_api_key")
+	got, err := client.GetSecret("approver.service_cwp_api_key")
 	require.NoError(t, err)
 	require.Equal(t, "cwp_from_vault", got)
-	require.Equal(t, "sandbox-approval-cwp-api-key", fake.getName)
+	require.Equal(t, "approver-service-cwp-api-key", fake.getName)
 
-	require.NoError(t, client.PutSecret("pem-bytes", "sandbox.approval_tls_private_key"))
-	require.Equal(t, "sandbox-approval-tls-private-key", fake.setName)
+	require.NoError(t, client.PutSecret("pem-bytes", "approver.service_tls_private_key"))
+	require.Equal(t, "approver-service-tls-private-key", fake.setName)
 	require.Equal(t, "pem-bytes", fake.setVal)
 }
 
@@ -72,7 +72,7 @@ func TestSecretClientAzure_GetSecretError(t *testing.T) {
 	fake := &fakeKeyVault{getErr: errors.New("denied")}
 	client := &SecretClientAzure{Svc: fake, Logger: zerolog.Nop()}
 
-	_, err := client.GetSecret("sandbox-approval-cwp-api-key")
+	_, err := client.GetSecret("approver-service-cwp-api-key")
 	require.ErrorContains(t, err, "denied")
 }
 
@@ -80,6 +80,6 @@ func TestSecretClientAzure_NilValue(t *testing.T) {
 	fake := &fakeKeyVault{nilValue: true}
 	client := &SecretClientAzure{Svc: fake, Logger: zerolog.Nop()}
 
-	_, err := client.GetSecret("sandbox-approval-cwp-api-key")
+	_, err := client.GetSecret("approver-service-cwp-api-key")
 	require.ErrorContains(t, err, "has no value")
 }
