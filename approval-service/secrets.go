@@ -39,9 +39,7 @@ func NewSecretClientAWS(
 ) (*SecretClientAWS, error) {
 	var client SecretClientAWS
 
-	client.Logger = l.With().
-		Str("component", "aws.secrets").
-		Logger()
+	client.Logger = l
 
 	cfg, err := config.LoadDefaultConfig(
 		context.TODO(),

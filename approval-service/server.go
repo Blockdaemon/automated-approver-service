@@ -15,7 +15,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 const operationTypeMakeTransaction = "make transaction"
@@ -32,20 +31,28 @@ type Server struct {
 
 	cfg ServerConfig
 
-	privateKey   *ecdsa.PrivateKey
-	cwp          approvalAPI
-	pollInterval time.Duration
-	pollCancel   context.CancelFunc
-	checkHook    func(MakeTransactionIntent, GenericIntent) error
+	privateKey    *ecdsa.PrivateKey
+	cwp           approvalAPI
+	pollInterval  time.Duration
+	pollCancel    context.CancelFunc
+	checkHook     func(MakeTransactionIntent, GenericIntent) error
+	confirmerOnly bool
+	selfUserID    string
 }
 
 func newServer(cfg ServerConfig) (*Server, error) {
 	echoInstance := echo.New()
 	echoInstance.HideBanner = true
 
-	lgr := log.Logger.With().
-		Str("component", "system-approver-test").
-		Logger()
+	level := parseLogLevel(cfg.LogLevel)
+	var lgr zerolog.Logger
+	if level <= zerolog.DebugLevel {
+		lgr = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
+			With().Timestamp().Logger().Level(level)
+	} else {
+		lgr = zerolog.New(os.Stderr).
+			With().Timestamp().Logger().Level(level)
+	}
 
 	if err := setup(echoInstance, lgr); err != nil {
 		return nil, err
@@ -63,6 +70,18 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+	case SecretsManagerAzure:
+		vaultURL := resolveKeyVaultURL(cfg.KeyVaultURL)
+		if vaultURL == "" {
+			return nil, fmt.Errorf("key_vault_url or AZURE_KEY_VAULT_URI is required")
+		}
+		secretManager, err = NewSecretClientAzure(
+			vaultURL,
+			zerolog.New(os.Stdout).With().Timestamp().Caller().Logger(),
+		)
+		if err != nil {
+			return nil, err
+		}
 	case SecretsManagerLocal:
 		secretManager = NewSecretClientLocal()
 	default:
@@ -70,12 +89,12 @@ func newServer(cfg ServerConfig) (*Server, error) {
 	}
 
 	if cfg.SecretManager != SecretsManagerLocal {
-		cfg.PrivateKey, err = secretManager.GetSecret("sandbox-approval-tls-private-key")
+		cfg.PrivateKey, err = secretManager.GetSecret("approver-service-tls-private-key")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get signing private key: %s", err)
 		}
 
-		cfg.APIKey, err = secretManager.GetSecret("sandbox-approval-cwp-api-key")
+		cfg.APIKey, err = secretManager.GetSecret("approver-service-cwp-api-key")
 		if err != nil {
 			return nil, fmt.Errorf("failed to get cwp api key: %s", err)
 		}
@@ -90,6 +109,12 @@ func newServer(cfg ServerConfig) (*Server, error) {
 	if v := os.Getenv("CWP_PRIVATE_KEY"); v != "" {
 		cfg.PrivateKey = v
 	}
+	if v := os.Getenv("CWP_CONFIRMER_ONLY"); v != "" {
+		cfg.ConfirmerOnly = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("CWP_LOG_LEVEL"); v != "" {
+		cfg.LogLevel = v
+	}
 
 	privateKeyDer, err := cfg.PrivateKeyDecoded()
 	if err != nil {
@@ -100,14 +125,15 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("failed to parse pk: %s", err)
 	}
 
-	fmt.Printf("signature_verification_key\":\"%s\"\n",
-		base64.StdEncoding.EncodeToString(getPublicKey(privateKey)))
+	lgr.Debug().
+		Str("signature_verification_key", base64.StdEncoding.EncodeToString(getPublicKey(privateKey))).
+		Msg("loaded signing key")
 
 	if strings.TrimSpace(cfg.CWPBaseURL) == "" {
 		return nil, fmt.Errorf("cwp_base_url is required")
 	}
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or sandbox-approval-cwp-api-key)")
+		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or approver-service-cwp-api-key)")
 	}
 
 	pollInterval := 10 * time.Second
@@ -121,13 +147,29 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		}
 	}
 
+	cwpCli := newCWPClient(cfg.CWPBaseURL, cfg.APIKey)
+
+	var selfUserID string
+	if cfg.ConfirmerOnly {
+		resolved, err := resolveUserFromIV(cfg.CWPBaseURL, cfg.APIKey)
+		if err != nil {
+			return nil, fmt.Errorf("confirmer_only requires IV GET /api/users/info: %w", err)
+		}
+		selfUserID = strings.ToLower(resolved)
+		lgr.Info().
+			Str("self_user_id", selfUserID).
+			Msg("confirmer-only mode: will skip entries not initiated by self")
+	}
+
 	server := Server{
-		cfg:          cfg,
-		echo:         echoInstance,
-		logger:       lgr,
-		privateKey:   privateKey,
-		cwp:          newCWPClient(cfg.CWPBaseURL, cfg.APIKey),
-		pollInterval: pollInterval,
+		cfg:           cfg,
+		echo:          echoInstance,
+		logger:        lgr,
+		privateKey:    privateKey,
+		cwp:           cwpCli,
+		pollInterval:  pollInterval,
+		confirmerOnly: cfg.ConfirmerOnly,
+		selfUserID:    selfUserID,
 	}
 
 	echoInstance.GET("/public-key", server.GetPublicKey)
@@ -137,22 +179,34 @@ func newServer(cfg ServerConfig) (*Server, error) {
 }
 
 type ServerConfig struct {
-	Port int `json:"port"`
+	Port int `yaml:"port"`
 
 	// ASN.1 DER encoded private key
-	PrivateKey string `json:"private_key"`
+	PrivateKey string `yaml:"private_key"`
 
-	SecretManager string `json:"secret_manager"`
+	SecretManager string `yaml:"secret_manager"`
+
+	// KeyVaultURL is the Azure Key Vault URI used when secret_manager is
+	// keyvault. AZURE_KEY_VAULT_URI overrides it.
+	KeyVaultURL string `yaml:"key_vault_url"`
 
 	// CWPBaseURL is the CWP approvals root, including the /api/cwp prefix on
 	// Institutional Vault (e.g. https://vault.example.com/api/cwp).
-	CWPBaseURL string `json:"cwp_base_url"`
+	CWPBaseURL string `yaml:"cwp_base_url"`
 
 	// APIKey is a cwp_ key issued for the bot user's email.
-	APIKey string `json:"api_key"`
+	APIKey string `yaml:"api_key"`
 
 	// PollInterval is a Go duration (default 10s).
-	PollInterval string `json:"poll_interval"`
+	PollInterval string `yaml:"poll_interval"`
+
+	// ConfirmerOnly skips list entries whose InitiatorID does not match
+	// this bot user. The bot email is resolved at startup from the API
+	// key via IV GET /api/users/info.
+	ConfirmerOnly bool `yaml:"confirmer_only"`
+
+	// LogLevel controls zerolog severity (debug, info, warn, error).
+	LogLevel string `yaml:"log_level"`
 }
 
 func (s ServerConfig) PrivateKeyDecoded() ([]byte, error) {
@@ -257,13 +311,40 @@ func (s *Server) checkMakeTransactionIntent(intent MakeTransactionIntent, enrich
 
 	logEvent.Msg("evaluating make transaction intent")
 
-	// Example policy hooks:
-	//   - Parse intent.Destination[i].Amount and compare to limits
-	//   - Whitelist destination addresses or CAIP19 values
-	//   - Reject raw-sign when RawTransaction is present but TxHash is empty on Canton
-	//   - Use enriched.IntentMetadata.RateInfo for USD notional caps
+	// Example policy hooks (uncomment and adapt for production):
+	//
+	//   Cap outbound amounts on structured transfers:
+	//
+	//   const maxAmount = 10_000.0
+	//   for _, dest := range intent.Destination {
+	//       if dest.Amount == "" { continue }
+	//       amount, _ := strconv.ParseFloat(dest.Amount, 64)
+	//       if amount > maxAmount {
+	//           return fmt.Errorf("amount %s exceeds limit", dest.Amount)
+	//       }
+	//   }
+	//
+	//   Whitelist destination addresses or CAIP19 values.
+	//   Reject raw-sign when RawTransaction is present but TxHash is empty on Canton.
+	//   Note: list payloads have no USD rate metadata (enriched.IntentMetadata.RateInfo
+	//   is typically empty); use intent fields directly.
 
 	return nil
+}
+
+func parseLogLevel(s string) zerolog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return zerolog.DebugLevel
+	case "info":
+		return zerolog.InfoLevel
+	case "warn":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	default:
+		return zerolog.DebugLevel
+	}
 }
 
 func getPublicKey(privKey *ecdsa.PrivateKey) []byte {

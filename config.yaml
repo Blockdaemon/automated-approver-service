@@ -1,0 +1,12 @@
+# Copy to config.local.yaml for secrets. Env overrides the file:
+# CWP_BASE_URL, CWP_API_KEY, CWP_PRIVATE_KEY, CWP_CONFIRMER_ONLY, CWP_LOG_LEVEL, AZURE_KEY_VAULT_URI
+port: 9294
+private_key: ""
+# local | secretsmanager | keyvault
+secret_manager: local
+# key_vault_url: https://example.vault.azure.net/
+cwp_base_url: https://vault.example.com/api/cwp
+api_key: ""
+poll_interval: 10s
+confirmer_only: false
+log_level: debug

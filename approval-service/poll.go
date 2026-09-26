@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 func (s *Server) pollLoop(ctx context.Context) {
@@ -55,13 +57,27 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 		s.logger.Info().
 			Str("operation_id", entry.OperationID).
 			Str("operation_type", entry.OperationType).
-			Msg("skipping unsupported operation type")
+			Str("reason", "unsupported operation type").
+			Msg("skipped")
 		return nil
 	}
 
 	intentBytes, err := base64.StdEncoding.DecodeString(entry.Intent)
 	if err != nil {
 		return fmt.Errorf("decode intent: %w", err)
+	}
+
+	if s.confirmerOnly {
+		initiator := extractInitiatorID(intentBytes)
+		if !strings.EqualFold(initiator, s.selfUserID) {
+			s.logger.Info().
+				Str("operation_id", entry.OperationID).
+				Str("operation_type", entry.OperationType).
+				Str("initiator_id", initiator).
+				Str("reason", "confirmer-only").
+				Msg("skipped")
+			return nil
+		}
 	}
 
 	if entry.OperationType == operationTypeMakeTransaction {
@@ -80,21 +96,31 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 				Err(err).
 				Str("operation_id", entry.OperationID).
 				RawJSON("intent", intentBytes).
-				Msg("make transaction intent did not pass automated checks; rejecting")
-			return s.cwp.Reject(ctx, entry.OperationID)
+				Msg("make transaction intent did not pass automated checks")
+			if rejectErr := s.cwp.Reject(ctx, entry.OperationID); rejectErr != nil {
+				return rejectErr
+			}
+			s.logger.Info().
+				Str("operation_id", entry.OperationID).
+				Str("operation_type", entry.OperationType).
+				Err(err).
+				Msg("rejected")
+			return nil
 		}
 
-		intentJSON, _ := json.MarshalIndent(makeTxIntent, "", "  ")
-		fmt.Printf("\n=== MAKE TRANSACTION INTENT ===\n%s\n", string(intentJSON))
+		if s.logger.GetLevel() <= zerolog.DebugLevel {
+			intentJSON, _ := json.MarshalIndent(makeTxIntent, "", "  ")
+			fmt.Printf("\n=== MAKE TRANSACTION INTENT ===\n%s\n", string(intentJSON))
 
-		if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
-			if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
-				s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
-			} else if decodedJSON, err := json.MarshalIndent(decoded, "", "  "); err == nil {
-				fmt.Printf("\n=== DECODED RAW TX (PROTO WIRE, CC) ===\n%s\n", string(decodedJSON))
+			if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
+				if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
+					s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
+				} else if decodedJSON, err := json.MarshalIndent(decoded, "", "  "); err == nil {
+					fmt.Printf("\n=== DECODED RAW TX (PROTO WIRE, CC) ===\n%s\n", string(decodedJSON))
+				}
 			}
 		}
-	} else {
+	} else if s.logger.GetLevel() <= zerolog.DebugLevel {
 		fmt.Printf("\n=== INTENT (%s) ===\n%s\n", entry.OperationType, intentBytes)
 	}
 
@@ -103,13 +129,22 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 		return fmt.Errorf("sign intent: %w", err)
 	}
 
-	signatureB64 := base64.StdEncoding.EncodeToString(signature)
-	fmt.Printf("\n=== SIGNATURE (APPROVED) ===\n")
-	fmt.Printf("Signature (Base64): %s\n", signatureB64)
-	fmt.Printf("Signature (Hex): %x\n", signature)
-	fmt.Printf("========================\n\n")
+	if s.logger.GetLevel() <= zerolog.DebugLevel {
+		signatureB64 := base64.StdEncoding.EncodeToString(signature)
+		fmt.Printf("\n=== SIGNATURE (APPROVED) ===\n")
+		fmt.Printf("Signature (Base64): %s\n", signatureB64)
+		fmt.Printf("Signature (Hex): %x\n", signature)
+		fmt.Printf("========================\n\n")
+	}
 
-	return s.cwp.Approve(ctx, entry.OperationID, signature)
+	if err := s.cwp.Approve(ctx, entry.OperationID, signature); err != nil {
+		return err
+	}
+	s.logger.Info().
+		Str("operation_id", entry.OperationID).
+		Str("operation_type", entry.OperationType).
+		Msg("approved")
+	return nil
 }
 
 func isSignableOperationType(opType string) bool {
