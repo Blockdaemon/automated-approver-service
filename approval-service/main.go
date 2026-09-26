@@ -57,9 +57,9 @@ func (c ServerConfig) validate() error {
 		return fmt.Errorf("port must be between 0 and 65535")
 	}
 	switch c.SecretManager {
-	case SecretsManagerLocal, SecretsManagerAWS:
+	case SecretsManagerLocal, SecretsManagerAWS, SecretsManagerAzure:
 	default:
-		return fmt.Errorf("secret_manager must be %q or %q", SecretsManagerLocal, SecretsManagerAWS)
+		return fmt.Errorf("secret_manager must be %q, %q, or %q", SecretsManagerLocal, SecretsManagerAWS, SecretsManagerAzure)
 	}
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

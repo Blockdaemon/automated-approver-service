@@ -14,17 +14,18 @@ Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https:/
 
 ## Configuration
 
-Copy `[config.yaml](config.yaml)` and fill in `cwp_base_url`, `api_key`, and `private_key`. Env overrides the file: `CWP_BASE_URL`, `CWP_API_KEY`, `CWP_PRIVATE_KEY`, `CWP_CONFIRMER_ONLY`, `CWP_LOG_LEVEL`. With `secret_manager: secretsmanager`, the API key and private key come from AWS (`sandbox-approval-cwp-api-key`, `sandbox-approval-tls-private-key`) instead of the file.
+Copy `[config.yaml](config.yaml)` and fill in `cwp_base_url`, `api_key`, and `private_key`. Env overrides the file: `CWP_BASE_URL`, `CWP_API_KEY`, `CWP_PRIVATE_KEY`, `CWP_CONFIRMER_ONLY`, `CWP_LOG_LEVEL`, `AZURE_KEY_VAULT_URI`. With `secret_manager: secretsmanager` or `secret_manager: keyvault`, the API key and private key come from AWS Secrets Manager or Azure Key Vault (`sandbox-approval-cwp-api-key`, `sandbox-approval-tls-private-key`) instead of the file. Key Vault auth uses the Azure default credential chain.
 
 
 | Field            | Env                  | Notes                                                                                                            |
 | ---------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `cwp_base_url`   | `CWP_BASE_URL`       | CWP root, including `/api/cwp` on Institutional Vault                                                            |
-| `api_key`        | `CWP_API_KEY`        | `cwp_` key. AWS: `sandbox-approval-cwp-api-key`                                                                  |
-| `private_key`    | `CWP_PRIVATE_KEY`    | Base64 ASN.1 DER signing key. AWS: `sandbox-approval-tls-private-key`                                            |
+| `api_key`        | `CWP_API_KEY`        | `cwp_` key. Secret name: `sandbox-approval-cwp-api-key`                                                          |
+| `private_key`    | `CWP_PRIVATE_KEY`    | Base64 ASN.1 DER signing key. Secret name: `sandbox-approval-tls-private-key`                                    |
 | `poll_interval`  |                      | Go duration, default `10s`                                                                                       |
 | `port`           |                      | Local HTTP for `/public-key` and `/health` (default 9294)                                                        |
-| `secret_manager` |                      | `"local"` or `"secretsmanager"`                                                                                  |
+| `secret_manager` |                      | `local`, `secretsmanager` (AWS), or `keyvault` (Azure Key Vault)                                                 |
+| `key_vault_url`  | `AZURE_KEY_VAULT_URI`| Vault URI when `secret_manager` is `keyvault`, for example `https://example.vault.azure.net/`                    |
 | `confirmer_only` | `CWP_CONFIRMER_ONLY` | When true, only confirm/approve entries initiated by self (default false)                                        |
 | `log_level`      | `CWP_LOG_LEVEL`      | `debug` (default), `info`, `warn`, `error`. Debug enables console output with intent dumps; info+ uses JSON logs |
 

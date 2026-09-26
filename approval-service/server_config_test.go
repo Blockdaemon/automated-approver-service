@@ -142,6 +142,26 @@ func TestLoadConfig_AppliesDefaults(t *testing.T) {
 	require.False(t, cfg.ConfirmerOnly)
 }
 
+func TestNewServer_KeyVaultRequiresURL(t *testing.T) {
+	cfg := validServerConfig(t)
+	cfg.SecretManager = SecretsManagerAzure
+	t.Setenv("AZURE_KEY_VAULT_URI", "")
+
+	_, err := newServer(cfg)
+	require.ErrorContains(t, err, "key_vault_url or AZURE_KEY_VAULT_URI is required")
+}
+
+func TestLoadConfig_AcceptsKeyVault(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	body := "secret_manager: keyvault\nkey_vault_url: https://example.vault.azure.net/\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
+	cfg, err := loadConfig(path)
+	require.NoError(t, err)
+	require.Equal(t, SecretsManagerAzure, cfg.SecretManager)
+	require.Equal(t, "https://example.vault.azure.net/", cfg.KeyVaultURL)
+}
+
 func TestLoadConfig_RejectsBadLogLevel(t *testing.T) {
 	path := t.TempDir() + "/config.yaml"
 	require.NoError(t, os.WriteFile(path, []byte("log_level: verbose\n"), 0o600))

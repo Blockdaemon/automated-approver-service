@@ -70,6 +70,18 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+	case SecretsManagerAzure:
+		vaultURL := resolveKeyVaultURL(cfg.KeyVaultURL)
+		if vaultURL == "" {
+			return nil, fmt.Errorf("key_vault_url or AZURE_KEY_VAULT_URI is required")
+		}
+		secretManager, err = NewSecretClientAzure(
+			vaultURL,
+			zerolog.New(os.Stdout).With().Timestamp().Caller().Logger(),
+		)
+		if err != nil {
+			return nil, err
+		}
 	case SecretsManagerLocal:
 		secretManager = NewSecretClientLocal()
 	default:
@@ -173,6 +185,10 @@ type ServerConfig struct {
 	PrivateKey string `yaml:"private_key"`
 
 	SecretManager string `yaml:"secret_manager"`
+
+	// KeyVaultURL is the Azure Key Vault URI used when secret_manager is
+	// keyvault. AZURE_KEY_VAULT_URI overrides it.
+	KeyVaultURL string `yaml:"key_vault_url"`
 
 	// CWPBaseURL is the CWP approvals root, including the /api/cwp prefix on
 	// Institutional Vault (e.g. https://vault.example.com/api/cwp).
