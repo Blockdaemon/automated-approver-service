@@ -17,6 +17,11 @@ import (
 const (
 	SecretsManagerAWS   = "secretsmanager"
 	SecretsManagerLocal = "local"
+
+	// Default cloud secret names. Override with api_key_secret_name and
+	// private_key_secret_name when several instances share one vault.
+	defaultAPIKeySecretName     = "approver-service-cwp-api-key"
+	defaultPrivateKeySecretName = "approver-service-tls-private-key"
 )
 
 // SecretsManagerAPI is an interface defined for unit testing.

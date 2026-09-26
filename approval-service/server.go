@@ -88,15 +88,28 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("secret manager type %s is not supported", cfg.SecretManager)
 	}
 
+	if v := os.Getenv("CWP_API_KEY_SECRET_NAME"); v != "" {
+		cfg.APIKeySecretName = v
+	}
+	if v := os.Getenv("CWP_PRIVATE_KEY_SECRET_NAME"); v != "" {
+		cfg.PrivateKeySecretName = v
+	}
+	if strings.TrimSpace(cfg.APIKeySecretName) == "" {
+		cfg.APIKeySecretName = defaultAPIKeySecretName
+	}
+	if strings.TrimSpace(cfg.PrivateKeySecretName) == "" {
+		cfg.PrivateKeySecretName = defaultPrivateKeySecretName
+	}
+
 	if cfg.SecretManager != SecretsManagerLocal {
-		cfg.PrivateKey, err = secretManager.GetSecret("approver-service-tls-private-key")
+		cfg.PrivateKey, err = secretManager.GetSecret(cfg.PrivateKeySecretName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get signing private key: %s", err)
+			return nil, fmt.Errorf("failed to get signing private key %s: %s", cfg.PrivateKeySecretName, err)
 		}
 
-		cfg.APIKey, err = secretManager.GetSecret("approver-service-cwp-api-key")
+		cfg.APIKey, err = secretManager.GetSecret(cfg.APIKeySecretName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get cwp api key: %s", err)
+			return nil, fmt.Errorf("failed to get cwp api key %s: %s", cfg.APIKeySecretName, err)
 		}
 	}
 
@@ -133,7 +146,7 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("cwp_base_url is required")
 	}
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or approver-service-cwp-api-key)")
+		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or secret %s)", cfg.APIKeySecretName)
 	}
 
 	pollInterval := 10 * time.Second
@@ -195,7 +208,18 @@ type ServerConfig struct {
 	CWPBaseURL string `yaml:"cwp_base_url"`
 
 	// APIKey is a cwp_ key issued for the bot user's email.
+	// Used only when secret_manager is local. Cloud backends ignore it.
 	APIKey string `yaml:"api_key"`
+
+	// APIKeySecretName is the AWS Secrets Manager or Azure Key Vault name
+	// for the cwp_ key. Default approver-service-cwp-api-key.
+	// CWP_API_KEY_SECRET_NAME overrides it.
+	APIKeySecretName string `yaml:"api_key_secret_name"`
+
+	// PrivateKeySecretName is the AWS Secrets Manager or Azure Key Vault
+	// name for the signing key. Default approver-service-tls-private-key.
+	// CWP_PRIVATE_KEY_SECRET_NAME overrides it.
+	PrivateKeySecretName string `yaml:"private_key_secret_name"`
 
 	// PollInterval is a Go duration (default 10s).
 	PollInterval string `yaml:"poll_interval"`
