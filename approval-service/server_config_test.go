@@ -140,6 +140,23 @@ func TestLoadConfig_AppliesDefaults(t *testing.T) {
 	require.Equal(t, "10s", cfg.PollInterval)
 	require.Equal(t, "debug", cfg.LogLevel)
 	require.False(t, cfg.ConfirmerOnly)
+	require.Equal(t, defaultAPIKeySecretName, cfg.APIKeySecretName)
+	require.Equal(t, defaultPrivateKeySecretName, cfg.PrivateKeySecretName)
+}
+
+func TestLoadConfig_CustomSecretNames(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	body := "" +
+		"secret_manager: keyvault\n" +
+		"key_vault_url: https://example.vault.azure.net/\n" +
+		"api_key_secret_name: approver-a-cwp-api-key\n" +
+		"private_key_secret_name: approver-a-tls-private-key\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
+	cfg, err := loadConfig(path)
+	require.NoError(t, err)
+	require.Equal(t, "approver-a-cwp-api-key", cfg.APIKeySecretName)
+	require.Equal(t, "approver-a-tls-private-key", cfg.PrivateKeySecretName)
 }
 
 func TestNewServer_KeyVaultRequiresURL(t *testing.T) {

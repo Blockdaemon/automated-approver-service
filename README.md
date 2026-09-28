@@ -14,20 +14,22 @@ Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https:/
 
 ## Configuration
 
-Copy `[config.yaml](config.yaml)` and fill in `cwp_base_url`, `api_key`, and `private_key`. Env overrides the file: `CWP_BASE_URL`, `CWP_API_KEY`, `CWP_PRIVATE_KEY`, `CWP_CONFIRMER_ONLY`, `CWP_LOG_LEVEL`, `AZURE_KEY_VAULT_URI`. With `secret_manager: secretsmanager` or `secret_manager: keyvault`, the API key and private key come from AWS Secrets Manager or Azure Key Vault (`approver-service-cwp-api-key`, `approver-service-tls-private-key`) instead of the file. Key Vault auth uses the Azure default credential chain.
+Copy `[config.yaml](config.yaml)` and fill in `cwp_base_url`, `api_key`, and `private_key`. Env overrides the file: `CWP_BASE_URL`, `CWP_API_KEY`, `CWP_PRIVATE_KEY`, `CWP_CONFIRMER_ONLY`, `CWP_LOG_LEVEL`, `AZURE_KEY_VAULT_URI`, `CWP_API_KEY_SECRET_NAME`, `CWP_PRIVATE_KEY_SECRET_NAME`. With `secret_manager: secretsmanager` or `secret_manager: keyvault`, the API key and private key come from AWS Secrets Manager or Azure Key Vault. Default secret names are `approver-service-cwp-api-key` and `approver-service-tls-private-key`. Set `api_key_secret_name` and `private_key_secret_name` when several instances share one vault. Key Vault auth uses the Azure default credential chain.
 
 
-| Field            | Env                  | Notes                                                                                                            |
-| ---------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `cwp_base_url`   | `CWP_BASE_URL`       | CWP root, including `/api/cwp` on Institutional Vault                                                            |
-| `api_key`        | `CWP_API_KEY`        | `cwp_` key. Secret name: `approver-service-cwp-api-key`                                                          |
-| `private_key`    | `CWP_PRIVATE_KEY`    | Base64 ASN.1 DER signing key. Secret name: `approver-service-tls-private-key`                                    |
-| `poll_interval`  |                      | Go duration, default `10s`                                                                                       |
-| `port`           |                      | Local HTTP for `/public-key` and `/health` (default 9294)                                                        |
-| `secret_manager` |                      | `local`, `secretsmanager` (AWS), or `keyvault` (Azure Key Vault)                                                 |
-| `key_vault_url`  | `AZURE_KEY_VAULT_URI`| Vault URI when `secret_manager` is `keyvault`, for example `https://example.vault.azure.net/`                    |
-| `confirmer_only` | `CWP_CONFIRMER_ONLY` | When true, only confirm/approve entries initiated by self (default false)                                        |
-| `log_level`      | `CWP_LOG_LEVEL`      | `debug` (default), `info`, `warn`, `error`. Debug enables console output with intent dumps; info+ uses JSON logs |
+| Field | Env | Notes |
+| --- | --- | --- |
+| `cwp_base_url` | `CWP_BASE_URL` | CWP root, including `/api/cwp` on Institutional Vault |
+| `api_key` | `CWP_API_KEY` | `cwp_` key. Used when `secret_manager` is `local` |
+| `private_key` | `CWP_PRIVATE_KEY` | Base64 ASN.1 DER signing key. Used when `secret_manager` is `local` |
+| `api_key_secret_name` | `CWP_API_KEY_SECRET_NAME` | Cloud secret name for the `cwp_` key. Default `approver-service-cwp-api-key` |
+| `private_key_secret_name` | `CWP_PRIVATE_KEY_SECRET_NAME` | Cloud secret name for the signing key. Default `approver-service-tls-private-key` |
+| `poll_interval` | | Go duration, default `10s` |
+| `port` | | Local HTTP for `/public-key` and `/health` (default 9294) |
+| `secret_manager` | | `local`, `secretsmanager` (AWS), or `keyvault` (Azure Key Vault) |
+| `key_vault_url` | `AZURE_KEY_VAULT_URI` | Vault URI when `secret_manager` is `keyvault`, for example `https://example.vault.azure.net/` |
+| `confirmer_only` | `CWP_CONFIRMER_ONLY` | When true, only confirm/approve entries initiated by self (default false) |
+| `log_level` | `CWP_LOG_LEVEL` | `debug` (default), `info`, `warn`, `error`. Debug enables console output with intent dumps; info+ uses JSON logs |
 
 
 The signature verification key is the uncompressed P-256 public key derived from `private_key`. It is not a secret.

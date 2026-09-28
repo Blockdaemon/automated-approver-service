@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -49,6 +50,12 @@ func (c *ServerConfig) applyDefaults() {
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "debug"
+	}
+	if strings.TrimSpace(c.APIKeySecretName) == "" {
+		c.APIKeySecretName = defaultAPIKeySecretName
+	}
+	if strings.TrimSpace(c.PrivateKeySecretName) == "" {
+		c.PrivateKeySecretName = defaultPrivateKeySecretName
 	}
 }
 
