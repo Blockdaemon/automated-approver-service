@@ -73,33 +73,24 @@ func TestProcessEntry_ApprovesMakeTransaction(t *testing.T) {
 	require.NoError(t, verifySignature(intent, getPublicKey(s.privateKey), api.approvedSig))
 }
 
-func TestProcessEntry_ApprovesTransfer(t *testing.T) {
-	intent := []byte(`{"OperationType":"transfer","OperationID":"op-xfer","Asset":"ETH"}`)
-	api := &fakeApprovalAPI{}
-	s := testServer(t, api)
+func TestProcessEntry_SignsEveryOperationType(t *testing.T) {
+	for _, opType := range []string{"transfer", "call smart contract", "update config restriction"} {
+		t.Run(opType, func(t *testing.T) {
+			intent := []byte(`{"OperationType":"` + opType + `","OperationID":"op-any-type"}`)
+			api := &fakeApprovalAPI{}
+			s := testServer(t, api)
 
-	err := s.processEntry(context.Background(), approvalListEntry{
-		OperationID:   "op-xfer",
-		OperationType: operationTypeTransfer,
-		Intent:        base64.StdEncoding.EncodeToString(intent),
-	})
-	require.NoError(t, err)
-	require.Equal(t, "op-xfer", api.approvedOp)
-	require.NoError(t, verifySignature(intent, getPublicKey(s.privateKey), api.approvedSig))
-}
-
-func TestProcessEntry_SkipsUnsupportedType(t *testing.T) {
-	api := &fakeApprovalAPI{}
-	s := testServer(t, api)
-
-	err := s.processEntry(context.Background(), approvalListEntry{
-		OperationID:   "op-2",
-		OperationType: "update config restriction",
-		Intent:        base64.StdEncoding.EncodeToString([]byte(`{}`)),
-	})
-	require.NoError(t, err)
-	require.Empty(t, api.approvedOp)
-	require.Empty(t, api.rejectedOp)
+			err := s.processEntry(context.Background(), approvalListEntry{
+				OperationID:   "op-any-type",
+				OperationType: opType,
+				Intent:        base64.StdEncoding.EncodeToString(intent),
+			})
+			require.NoError(t, err)
+			require.Equal(t, "op-any-type", api.approvedOp)
+			require.Empty(t, api.rejectedOp)
+			require.NoError(t, verifySignature(intent, getPublicKey(s.privateKey), api.approvedSig))
+		})
+	}
 }
 
 func TestProcessEntry_RejectsWhenCheckFails(t *testing.T) {

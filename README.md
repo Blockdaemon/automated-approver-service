@@ -1,6 +1,6 @@
 # Automated Approver Service
 
-Reference implementation for testing CWP fetch-based approvals. The service polls pending operations, ECDSA P-256-signs `make transaction` and `transfer` intents, and posts approve or reject with a `cwp_` API key. Other operation types are skipped. 
+Reference implementation for testing CWP fetch-based approvals. The service polls pending operations, ECDSA P-256-signs every listed intent, and posts approve or reject with a `cwp_` API key.
 
 Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https://github.com/Blockdaemon/automated-approver-service/releases).
 
@@ -50,7 +50,7 @@ export CWP_PRIVATE_KEY='...'   # from -genkey
 
 ## Custom approval checks
 
-Each listed `make transaction` entry is decoded to the stored intent, unmarshaled, passed through `checkMakeTransactionIntent`, then signed. Wallet UI `transfer` operations are signed the same way without that check. Other types are skipped (not rejected).
+Each listed `make transaction` entry is decoded to the stored intent, unmarshaled, passed through `checkMakeTransactionIntent`, then signed. Every other operation type is signed the same way without that check.
 
 Custom policy hooks go in `checkMakeTransactionIntent` (`approval-service/server.go`). Return an error to reject via CWP; return `nil` to approve and sign.
 

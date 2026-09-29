@@ -18,9 +18,8 @@ import (
 )
 
 const operationTypeMakeTransaction = "make transaction"
-const operationTypeTransfer = "transfer"
 
-// Server polls CWP for pending approvals and signs make-transaction intents.
+// Server polls CWP for pending approvals and signs every listed intent.
 // GET /public-key remains for registering the ECDSA P-256 key on the bot user.
 //
 // This is a reference implementation for testing. Extend checkMakeTransactionIntent

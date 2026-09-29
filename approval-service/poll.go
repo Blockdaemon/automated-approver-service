@@ -53,15 +53,6 @@ func (s *Server) pollOnce(ctx context.Context) error {
 }
 
 func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) error {
-	if !isSignableOperationType(entry.OperationType) {
-		s.logger.Info().
-			Str("operation_id", entry.OperationID).
-			Str("operation_type", entry.OperationType).
-			Str("reason", "unsupported operation type").
-			Msg("skipped")
-		return nil
-	}
-
 	intentBytes, err := base64.StdEncoding.DecodeString(entry.Intent)
 	if err != nil {
 		return fmt.Errorf("decode intent: %w", err)
@@ -145,8 +136,4 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 		Str("operation_type", entry.OperationType).
 		Msg("approved")
 	return nil
-}
-
-func isSignableOperationType(opType string) bool {
-	return opType == operationTypeMakeTransaction || opType == operationTypeTransfer
 }
