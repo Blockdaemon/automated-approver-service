@@ -19,6 +19,8 @@ import (
 
 const operationTypeMakeTransaction = "make transaction"
 const operationTypeTransfer = "transfer"
+const operationTypeCallContract = "call smart contract"
+const operationTypeDeployContract = "deploy smart contract"
 
 // Server polls CWP for pending approvals and signs make-transaction intents.
 // GET /public-key remains for registering the ECDSA P-256 key on the bot user.

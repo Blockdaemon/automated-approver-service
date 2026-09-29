@@ -148,5 +148,10 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 }
 
 func isSignableOperationType(opType string) bool {
-	return opType == operationTypeMakeTransaction || opType == operationTypeTransfer
+	switch opType {
+	case operationTypeMakeTransaction, operationTypeTransfer, operationTypeCallContract, operationTypeDeployContract:
+		return true
+	default:
+		return false
+	}
 }
