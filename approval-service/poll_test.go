@@ -73,6 +73,26 @@ func TestProcessEntry_ApprovesMakeTransaction(t *testing.T) {
 	require.NoError(t, verifySignature(intent, getPublicKey(s.privateKey), api.approvedSig))
 }
 
+func TestProcessEntry_ApprovesCallAndDeployContract(t *testing.T) {
+	for _, opType := range []string{operationTypeCallContract, operationTypeDeployContract} {
+		t.Run(opType, func(t *testing.T) {
+			intent := []byte(`{"OperationType":"` + opType + `","OperationID":"op-contract","InitiatorID":"bot@example.com"}`)
+			api := &fakeApprovalAPI{}
+			s := testServer(t, api)
+
+			err := s.processEntry(context.Background(), approvalListEntry{
+				OperationID:   "op-contract",
+				OperationType: opType,
+				Intent:        base64.StdEncoding.EncodeToString(intent),
+			})
+			require.NoError(t, err)
+			require.Equal(t, "op-contract", api.approvedOp)
+			require.Empty(t, api.rejectedOp)
+			require.NoError(t, verifySignature(intent, getPublicKey(s.privateKey), api.approvedSig))
+		})
+	}
+}
+
 func TestProcessEntry_ApprovesTransfer(t *testing.T) {
 	intent := []byte(`{"OperationType":"transfer","OperationID":"op-xfer","Asset":"ETH"}`)
 	api := &fakeApprovalAPI{}
