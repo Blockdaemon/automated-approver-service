@@ -4,14 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 const defaultHTTPTimeout = 30 * time.Second
+
+// errApprovalNotFound is returned by Get when CWP has no pending approval
+// for this user and operation (HTTP 404).
+var errApprovalNotFound = errors.New("approval not found")
 
 // approvalListEntry is the CWP GET /approvals/list JSON shape.
 // Intent is base64 of the stored operation intent; Approve verifies the
@@ -36,8 +42,11 @@ type cwpRejectBody struct {
 // (the Vault gateway rejects unknown JSON fields).
 type approvalAPI interface {
 	List(ctx context.Context) ([]approvalListEntry, error)
+	Get(ctx context.Context, operationID string) (approvalListEntry, error)
 	Approve(ctx context.Context, operationID string, signature []byte) error
 	Reject(ctx context.Context, operationID string) error
+	// Me returns the authenticated user's ID (email) from GET /users/me.
+	Me(ctx context.Context) (string, error)
 }
 
 type cwpClient struct {
@@ -88,6 +97,73 @@ func (c *cwpClient) List(ctx context.Context) ([]approvalListEntry, error) {
 	return entries, nil
 }
 
+func (c *cwpClient) Get(ctx context.Context, operationID string) (approvalListEntry, error) {
+	path := "/approvals/id/" + url.PathEscape(operationID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return approvalListEntry{}, err
+	}
+	c.setAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return approvalListEntry{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return approvalListEntry{}, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return approvalListEntry{}, errApprovalNotFound
+	}
+	if resp.StatusCode != http.StatusOK {
+		return approvalListEntry{}, fmt.Errorf("GET %s: status %d: %s", path, resp.StatusCode, truncate(body, 512))
+	}
+
+	var entry approvalListEntry
+	if err := json.Unmarshal(body, &entry); err != nil {
+		return approvalListEntry{}, fmt.Errorf("GET %s: decode: %w", path, err)
+	}
+	return entry, nil
+}
+
+// Me calls CWP GET /users/me and returns the caller ID. On Institutional Vault
+// that route is /api/cwp/users/me when cwp_base_url includes /api/cwp.
+func (c *cwpClient) Me(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/users/me", nil)
+	if err != nil {
+		return "", err
+	}
+	c.setAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("GET /users/me: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET /users/me: status %d: %s", resp.StatusCode, truncate(body, 256))
+	}
+
+	var user struct {
+		ID string `json:"ID"`
+	}
+	if err := json.Unmarshal(body, &user); err != nil {
+		return "", fmt.Errorf("GET /users/me: decode: %w", err)
+	}
+	if strings.TrimSpace(user.ID) == "" {
+		return "", fmt.Errorf("GET /users/me: response missing ID")
+	}
+	return user.ID, nil
+}
+
 func (c *cwpClient) Approve(ctx context.Context, operationID string, signature []byte) error {
 	payload, err := json.Marshal(cwpApproveBody{
 		OperationID:     operationID,
@@ -132,11 +208,7 @@ func (c *cwpClient) post(ctx context.Context, path string, payload []byte) error
 }
 
 func (c *cwpClient) setAuth(req *http.Request) {
-	token := c.apiKey
-	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
-		token = "Bearer " + token
-	}
-	req.Header.Set("Authorization", token)
+	req.Header.Set("Authorization", bearerToken(c.apiKey))
 }
 
 func truncate(b []byte, n int) string {
@@ -145,55 +217,4 @@ func truncate(b []byte, n int) string {
 		return s
 	}
 	return s[:n] + "..."
-}
-
-// resolveUserFromIV calls IV GET /api/users/info to resolve the API-key
-// owner email. cwpBaseURL is the CWP root (e.g. https://vault.example.com/api/cwp);
-// the function strips the /api/cwp suffix to reach the wallet API.
-func resolveUserFromIV(cwpBaseURL, apiKey string) (string, error) {
-	origin := cwpBaseURL
-	for _, suffix := range []string{"/api/cwp", "/api/cwp/"} {
-		if trimmed := strings.TrimSuffix(origin, suffix); trimmed != origin {
-			origin = trimmed
-			break
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), defaultHTTPTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/api/users/info", nil)
-	if err != nil {
-		return "", err
-	}
-	token := apiKey
-	if !strings.HasPrefix(strings.ToLower(token), "bearer ") {
-		token = "Bearer " + token
-	}
-	req.Header.Set("Authorization", token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("GET /api/users/info: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET /api/users/info: status %d: %s", resp.StatusCode, truncate(body, 256))
-	}
-
-	var info struct {
-		Email *string `json:"Email"`
-	}
-	if err := json.Unmarshal(body, &info); err != nil {
-		return "", fmt.Errorf("GET /api/users/info: decode: %w", err)
-	}
-	if info.Email == nil || *info.Email == "" {
-		return "", fmt.Errorf("GET /api/users/info: response missing Email field")
-	}
-	return *info.Email, nil
 }

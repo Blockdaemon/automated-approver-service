@@ -29,6 +29,19 @@ func (f *fakeApprovalAPI) List(context.Context) ([]approvalListEntry, error) {
 	return f.entries, nil
 }
 
+func (f *fakeApprovalAPI) Get(_ context.Context, operationID string) (approvalListEntry, error) {
+	for _, entry := range f.entries {
+		if entry.OperationID == operationID {
+			return entry, nil
+		}
+	}
+	return approvalListEntry{}, errApprovalNotFound
+}
+
+func (f *fakeApprovalAPI) Me(context.Context) (string, error) {
+	return "", errors.New("me not configured")
+}
+
 func (f *fakeApprovalAPI) Approve(_ context.Context, operationID string, signature []byte) error {
 	f.approvedOp = operationID
 	f.approvedSig = signature
@@ -48,6 +61,8 @@ func testServer(t *testing.T, api *fakeApprovalAPI) *Server {
 		logger:     zerolog.Nop(),
 		privateKey: key,
 		cwp:        api,
+		seen:       map[string]struct{}{},
+		cancelled:  map[string]struct{}{},
 	}
 }
 
@@ -150,7 +165,7 @@ func TestPollOnce_ProcessesListedOps(t *testing.T) {
 		}},
 	}
 	s := testServer(t, api)
-	require.NoError(t, s.pollOnce(context.Background()))
+	require.NoError(t, s.syncPending(context.Background()))
 	require.Equal(t, "op-1", api.approvedOp)
 }
 
@@ -233,6 +248,41 @@ func TestCWPClient_ApproveOmitsUserID(t *testing.T) {
 	require.False(t, hasUser)
 	require.Contains(t, gotBody, "OperationID")
 	require.Contains(t, gotBody, "IntentSignature")
+}
+
+func TestProcessEntry_SkipsWhenCancelled(t *testing.T) {
+	b64, _ := makeTxIntentB64(t)
+	api := &fakeApprovalAPI{}
+	s := testServer(t, api)
+	s.markCancelled("op-1")
+
+	err := s.processEntry(context.Background(), approvalListEntry{
+		OperationID:   "op-1",
+		OperationType: operationTypeMakeTransaction,
+		Intent:        b64,
+	})
+	require.NoError(t, err)
+	require.Empty(t, api.approvedOp)
+	require.Empty(t, api.rejectedOp)
+}
+
+func TestCWPClient_Me(t *testing.T) {
+	var gotAuth string
+	srv := newCWPTestServer(t, http.MethodGet, "/users/me", http.StatusOK, []byte(`{"ID":"bot@example.com","Name":"Bot","Active":true}`), func(r *http.Request, _ []byte) {
+		gotAuth = r.Header.Get("Authorization")
+	})
+	c := newCWPClient(srv.URL, "cwp_testkey")
+	id, err := c.Me(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "bot@example.com", id)
+	require.Equal(t, "Bearer cwp_testkey", gotAuth)
+}
+
+func TestCWPClient_GetNotFound(t *testing.T) {
+	srv := newCWPTestServer(t, http.MethodGet, "/approvals/id/missing", http.StatusNotFound, []byte(`{"message":"not found"}`), nil)
+	c := newCWPClient(srv.URL, "cwp_testkey")
+	_, err := c.Get(context.Background(), "missing")
+	require.ErrorIs(t, err, errApprovalNotFound)
 }
 
 func TestCWPClient_ListNullBody(t *testing.T) {

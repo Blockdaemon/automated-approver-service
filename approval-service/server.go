@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -22,7 +23,7 @@ const operationTypeTransfer = "transfer"
 const operationTypeCallContract = "call smart contract"
 const operationTypeDeployContract = "deploy smart contract"
 
-// Server polls CWP for pending approvals and signs make-transaction intents.
+// Server subscribes to CWP approval events and signs make-transaction intents.
 // GET /public-key remains for registering the ECDSA P-256 key on the bot user.
 //
 // This is a reference implementation for testing. Extend checkMakeTransactionIntent
@@ -35,11 +36,13 @@ type Server struct {
 
 	privateKey    *ecdsa.PrivateKey
 	cwp           approvalAPI
-	pollInterval  time.Duration
-	pollCancel    context.CancelFunc
 	checkHook     func(MakeTransactionIntent, GenericIntent) error
 	confirmerOnly bool
 	selfUserID    string
+
+	mu        sync.Mutex
+	seen      map[string]struct{}
+	cancelled map[string]struct{}
 }
 
 func newServer(cfg ServerConfig) (*Server, error) {
@@ -151,24 +154,19 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("api_key is required (CWP_API_KEY, config api_key, or secret %s)", cfg.APIKeySecretName)
 	}
 
-	pollInterval := 10 * time.Second
-	if cfg.PollInterval != "" {
-		pollInterval, err = time.ParseDuration(cfg.PollInterval)
-		if err != nil {
-			return nil, fmt.Errorf("invalid poll_interval: %w", err)
-		}
-		if pollInterval <= 0 {
-			return nil, fmt.Errorf("poll_interval must be greater than zero")
-		}
+	if _, err := eventsWebSocketURL(cfg.CWPBaseURL); err != nil {
+		return nil, err
 	}
 
 	cwpCli := newCWPClient(cfg.CWPBaseURL, cfg.APIKey)
 
 	var selfUserID string
 	if cfg.ConfirmerOnly {
-		resolved, err := resolveUserFromIV(cfg.CWPBaseURL, cfg.APIKey)
+		resolveCtx, resolveCancel := context.WithTimeout(context.Background(), defaultHTTPTimeout)
+		resolved, err := cwpCli.Me(resolveCtx)
+		resolveCancel()
 		if err != nil {
-			return nil, fmt.Errorf("confirmer_only requires IV GET /api/users/info: %w", err)
+			return nil, fmt.Errorf("confirmer_only requires CWP GET /users/me: %w", err)
 		}
 		selfUserID = strings.ToLower(resolved)
 		lgr.Info().
@@ -182,13 +180,16 @@ func newServer(cfg ServerConfig) (*Server, error) {
 		logger:        lgr,
 		privateKey:    privateKey,
 		cwp:           cwpCli,
-		pollInterval:  pollInterval,
 		confirmerOnly: cfg.ConfirmerOnly,
 		selfUserID:    selfUserID,
+		seen:          map[string]struct{}{},
+		cancelled:     map[string]struct{}{},
 	}
 
 	echoInstance.GET("/public-key", server.GetPublicKey)
 	echoInstance.GET("/health", server.Health)
+	// pprof registers on DefaultServeMux via the blank import in main.go.
+	echoInstance.GET("/debug/pprof/*", echo.WrapHandler(http.DefaultServeMux))
 
 	return &server, nil
 }
@@ -223,12 +224,9 @@ type ServerConfig struct {
 	// CWP_PRIVATE_KEY_SECRET_NAME overrides it.
 	PrivateKeySecretName string `yaml:"private_key_secret_name"`
 
-	// PollInterval is a Go duration (default 10s).
-	PollInterval string `yaml:"poll_interval"`
-
 	// ConfirmerOnly skips list entries whose InitiatorID does not match
 	// this bot user. The bot email is resolved at startup from the API
-	// key via IV GET /api/users/info.
+	// key via CWP GET /users/me.
 	ConfirmerOnly bool `yaml:"confirmer_only"`
 
 	// LogLevel controls zerolog severity (debug, info, warn, error).
@@ -273,9 +271,9 @@ func setup(
 }
 
 func (s *Server) Serve() error {
-	pollCtx, cancel := context.WithCancel(context.Background())
-	s.pollCancel = cancel
-	go s.pollLoop(pollCtx)
+	watchCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.watchLoop(watchCtx)
 
 	err := s.echo.Start(fmt.Sprintf(":%d", s.cfg.Port))
 	cancel()

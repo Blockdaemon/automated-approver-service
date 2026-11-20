@@ -6,48 +6,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
-
-	"github.com/rs/zerolog"
 )
 
-func (s *Server) pollLoop(ctx context.Context) {
-	s.logger.Info().
-		Dur("interval", s.pollInterval).
-		Msg("polling CWP approvals")
-
-	if err := s.pollOnce(ctx); err != nil {
-		s.logger.Error().Err(err).Msg("approvals poll failed")
-	}
-
-	ticker := time.NewTicker(s.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := s.pollOnce(ctx); err != nil {
-				s.logger.Error().Err(err).Msg("approvals poll failed")
-			}
-		}
-	}
-}
-
-func (s *Server) pollOnce(ctx context.Context) error {
+// syncPending lists approvals already waiting for this user. The events
+// socket does not replay, so each connection (and -once) runs this once.
+func (s *Server) syncPending(ctx context.Context) error {
 	entries, err := s.cwp.List(ctx)
 	if err != nil {
 		return err
 	}
+	s.logger.Debug().Int("count", len(entries)).Msg("pending approval catch-up")
 	for _, entry := range entries {
+		if reason := s.skipReason(entry.OperationID); reason != "" {
+			s.logger.Debug().
+				Str("operation_id", entry.OperationID).
+				Str("operation_type", entry.OperationType).
+				Str("reason", reason).
+				Msg("skipped")
+			continue
+		}
+		s.logger.Debug().
+			Str("operation_id", entry.OperationID).
+			Str("operation_type", entry.OperationType).
+			Msg("pending approval")
 		if err := s.processEntry(ctx, entry); err != nil {
 			s.logger.Error().
 				Err(err).
 				Str("operation_id", entry.OperationID).
 				Str("operation_type", entry.OperationType).
 				Msg("failed to process pending approval")
+			continue
 		}
+		s.markSeen(entry.OperationID)
 	}
 	return nil
 }
@@ -65,6 +55,15 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 	intentBytes, err := base64.StdEncoding.DecodeString(entry.Intent)
 	if err != nil {
 		return fmt.Errorf("decode intent: %w", err)
+	}
+
+	if s.isCancelled(entry.OperationID) {
+		s.logger.Info().
+			Str("operation_id", entry.OperationID).
+			Str("operation_type", entry.OperationType).
+			Str("reason", "approval cancelled").
+			Msg("skipped")
+		return nil
 	}
 
 	if s.confirmerOnly {
@@ -97,6 +96,14 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 				Str("operation_id", entry.OperationID).
 				RawJSON("intent", intentBytes).
 				Msg("make transaction intent did not pass automated checks")
+			if s.isCancelled(entry.OperationID) {
+				s.logger.Info().
+					Str("operation_id", entry.OperationID).
+					Str("operation_type", entry.OperationType).
+					Str("reason", "approval cancelled").
+					Msg("skipped")
+				return nil
+			}
 			if rejectErr := s.cwp.Reject(ctx, entry.OperationID); rejectErr != nil {
 				return rejectErr
 			}
@@ -108,20 +115,19 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 			return nil
 		}
 
-		if s.logger.GetLevel() <= zerolog.DebugLevel {
-			intentJSON, _ := json.MarshalIndent(makeTxIntent, "", "  ")
-			fmt.Printf("\n=== MAKE TRANSACTION INTENT ===\n%s\n", string(intentJSON))
-
-			if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
-				if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
-					s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
-				} else if decodedJSON, err := json.MarshalIndent(decoded, "", "  "); err == nil {
-					fmt.Printf("\n=== DECODED RAW TX (PROTO WIRE, CC) ===\n%s\n", string(decodedJSON))
-				}
+		s.logIntent(entry, intentBytes)
+		if strings.EqualFold(makeTxIntent.Asset, "CC") && makeTxIntent.RawTransaction != "" {
+			if decoded, err := decodeProtoWireFromBase64(makeTxIntent.RawTransaction); err != nil {
+				s.logger.Warn().Err(err).Msg("failed to decode CC RawTransaction as protobuf wire format")
+			} else if decodedJSON, err := json.Marshal(decoded); err == nil {
+				s.logger.Debug().
+					Str("operation_id", entry.OperationID).
+					RawJSON("raw_transaction", decodedJSON).
+					Msg("decoded canton raw transaction")
 			}
 		}
-	} else if s.logger.GetLevel() <= zerolog.DebugLevel {
-		fmt.Printf("\n=== INTENT (%s) ===\n%s\n", entry.OperationType, intentBytes)
+	} else {
+		s.logIntent(entry, intentBytes)
 	}
 
 	signature, err := signIntent(s.privateKey, intentBytes)
@@ -129,12 +135,19 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 		return fmt.Errorf("sign intent: %w", err)
 	}
 
-	if s.logger.GetLevel() <= zerolog.DebugLevel {
-		signatureB64 := base64.StdEncoding.EncodeToString(signature)
-		fmt.Printf("\n=== SIGNATURE (APPROVED) ===\n")
-		fmt.Printf("Signature (Base64): %s\n", signatureB64)
-		fmt.Printf("Signature (Hex): %x\n", signature)
-		fmt.Printf("========================\n\n")
+	s.logger.Debug().
+		Str("operation_id", entry.OperationID).
+		Str("signature_b64", base64.StdEncoding.EncodeToString(signature)).
+		Str("signature_hex", fmt.Sprintf("%x", signature)).
+		Msg("approval signature")
+
+	if s.isCancelled(entry.OperationID) {
+		s.logger.Info().
+			Str("operation_id", entry.OperationID).
+			Str("operation_type", entry.OperationType).
+			Str("reason", "approval cancelled").
+			Msg("skipped")
+		return nil
 	}
 
 	if err := s.cwp.Approve(ctx, entry.OperationID, signature); err != nil {
@@ -145,6 +158,16 @@ func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) erro
 		Str("operation_type", entry.OperationType).
 		Msg("approved")
 	return nil
+}
+
+func (s *Server) logIntent(entry approvalListEntry, intentBytes []byte) {
+	eventLog := s.logger.Debug().
+		Str("operation_id", entry.OperationID).
+		Str("operation_type", entry.OperationType)
+	if json.Valid(intentBytes) {
+		eventLog = eventLog.RawJSON("intent", intentBytes)
+	}
+	eventLog.Msg("approval intent")
 }
 
 func isSignableOperationType(opType string) bool {

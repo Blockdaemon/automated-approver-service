@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.1
+	github.com/coder/websocket v1.8.13
 	github.com/digital-asset/dazl-client/v8 v8.9.0
 	github.com/go-ozzo/ozzo-validation/v4 v4.4.1
 	github.com/labstack/echo/v4 v4.15.4

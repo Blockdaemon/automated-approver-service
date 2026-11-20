@@ -11,6 +11,5 @@ secret_manager: local
 # private_key_secret_name: approver-service-tls-private-key
 cwp_base_url: https://vault.example.com/api/cwp
 api_key: ""
-poll_interval: 10s
 confirmer_only: false
 log_level: debug
