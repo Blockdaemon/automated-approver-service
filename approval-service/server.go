@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/echo/v5"
+	"github.com/labstack/echo/v5/middleware"
 	"github.com/rs/zerolog"
 )
 
@@ -47,7 +47,6 @@ type Server struct {
 
 func newServer(cfg ServerConfig) (*Server, error) {
 	echoInstance := echo.New()
-	echoInstance.HideBanner = true
 
 	level := parseLogLevel(cfg.LogLevel)
 	var lgr zerolog.Logger
@@ -247,7 +246,7 @@ func setup(
 	echoInstance.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
 		LogURI:    true,
 		LogStatus: true,
-		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+		LogValuesFunc: func(c *echo.Context, v middleware.RequestLoggerValues) error {
 			// Only log request details if there's an error
 			if v.Error != nil {
 				l.Err(v.Error).
@@ -275,7 +274,10 @@ func (s *Server) Serve() error {
 	defer cancel()
 	go s.watchLoop(watchCtx)
 
-	err := s.echo.Start(fmt.Sprintf(":%d", s.cfg.Port))
+	err := echo.StartConfig{
+		Address:    fmt.Sprintf(":%d", s.cfg.Port),
+		HideBanner: true,
+	}.Start(context.Background(), s.echo)
 	cancel()
 	return err
 }
@@ -284,13 +286,13 @@ type GetPublicKey struct {
 	PublicKey []byte `json:"public_key"`
 }
 
-func (s *Server) GetPublicKey(c echo.Context) error {
+func (s *Server) GetPublicKey(c *echo.Context) error {
 	return c.JSON(http.StatusOK, &GetPublicKey{
 		PublicKey: getPublicKey(s.privateKey),
 	})
 }
 
-func (s *Server) Health(c echo.Context) error {
+func (s *Server) Health(c *echo.Context) error {
 	return c.NoContent(http.StatusOK)
 }
 
