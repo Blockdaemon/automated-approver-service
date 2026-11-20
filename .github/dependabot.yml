@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # The go.mod toolchain line is the dependency named "go".
+      # Keep it out of the module group so a stdlib bump is not held behind an SDK bump.
+      go-toolchain:
+        patterns:
+          - "go"
+      go-modules:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "go"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"

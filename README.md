@@ -4,6 +4,16 @@ Reference implementation for testing CWP approvals. The service subscribes to th
 
 Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https://github.com/Blockdaemon/automated-approver-service/releases).
 
+Tagged releases publish linux/amd64, darwin/amd64, and darwin/arm64 binaries. Each binary is published with a SHA-256 checksum, a CycloneDX SBOM, and a keyless Sigstore bundle from the release workflow. The checksum confirms the downloaded bytes. The bundle confirms the file was signed by that workflow for the tag.
+
+```bash
+cosign verify-blob \
+  --bundle automated-approver-service-linux-amd64.bundle \
+  --certificate-identity-regexp '^https://github.com/Blockdaemon/automated-approver-service/\.github/workflows/release\.yml@refs/tags/v.+' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  automated-approver-service-linux-amd64
+```
+
 ## Setup
 
 1. Create a Vault user and add them to the transaction-restriction approver group.
