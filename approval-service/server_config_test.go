@@ -50,14 +50,6 @@ func TestNewServer_RequiresAPIKey(t *testing.T) {
 	require.ErrorContains(t, err, "api_key is required")
 }
 
-func TestNewServer_RejectsInvalidPollInterval(t *testing.T) {
-	cfg := validServerConfig(t)
-	cfg.PollInterval = "not-a-duration"
-
-	_, err := newServer(cfg)
-	require.ErrorContains(t, err, "invalid poll_interval")
-}
-
 func TestNewServer_EnvOverridesConfig(t *testing.T) {
 	cfg := validServerConfig(t)
 	cfg.CWPBaseURL = ""
@@ -75,31 +67,29 @@ func TestNewServer_EnvOverridesConfig(t *testing.T) {
 	require.Equal(t, "cwp_from_env", srv.cfg.APIKey)
 }
 
-func TestNewServer_ConfirmerOnlyFailsWithoutIV(t *testing.T) {
+func TestNewServer_ConfirmerOnlyFailsWithoutUsersMe(t *testing.T) {
 	cfg := validServerConfig(t)
 	cfg.ConfirmerOnly = true
-	// No IV server running, so lookup will fail.
 	cfg.CWPBaseURL = "http://127.0.0.1:1/api/cwp"
 
 	_, err := newServer(cfg)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "confirmer_only requires IV GET /api/users/info")
+	require.Contains(t, err.Error(), "confirmer_only requires CWP GET /users/me")
 }
 
 func TestNewServer_ConfirmerOnlyEnvOverride(t *testing.T) {
-	// Stand up a fake IV for env-triggered confirmer_only.
-	iv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/users/info" {
+	cwp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/me" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"Name":"Bot","Email":"envbot@example.com","Status":"Active","Role":"Admin"}`))
+			_, _ = w.Write([]byte(`{"ID":"envbot@example.com","Name":"Bot","Active":true}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	t.Cleanup(iv.Close)
+	t.Cleanup(cwp.Close)
 
 	cfg := validServerConfig(t)
-	cfg.CWPBaseURL = iv.URL + "/api/cwp"
+	cfg.CWPBaseURL = cwp.URL
 	t.Setenv("CWP_CONFIRMER_ONLY", "true")
 
 	srv, err := newServer(cfg)
@@ -108,21 +98,21 @@ func TestNewServer_ConfirmerOnlyEnvOverride(t *testing.T) {
 	require.Equal(t, "envbot@example.com", srv.selfUserID)
 }
 
-func TestNewServer_ConfirmerOnlyResolvesFromIV(t *testing.T) {
-	// Stand up a fake IV that returns an email from GET /api/users/info.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/users/info" {
+func TestNewServer_ConfirmerOnlyResolvesFromUsersMe(t *testing.T) {
+	cwp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/me" {
+			require.Equal(t, "Bearer cwp_test", r.Header.Get("Authorization"))
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"Name":"Bot","Email":"resolved@example.com","Status":"Active","Role":"Admin"}`))
+			_, _ = w.Write([]byte(`{"ID":"Resolved@example.com","Name":"Bot","Active":true}`))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	t.Cleanup(srv.Close)
+	t.Cleanup(cwp.Close)
 
 	cfg := validServerConfig(t)
 	cfg.ConfirmerOnly = true
-	cfg.CWPBaseURL = srv.URL + "/api/cwp"
+	cfg.CWPBaseURL = cwp.URL
 
 	s, err := newServer(cfg)
 	require.NoError(t, err)
@@ -137,7 +127,6 @@ func TestLoadConfig_AppliesDefaults(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 9294, cfg.Port)
 	require.Equal(t, SecretsManagerLocal, cfg.SecretManager)
-	require.Equal(t, "10s", cfg.PollInterval)
 	require.Equal(t, "debug", cfg.LogLevel)
 	require.False(t, cfg.ConfirmerOnly)
 	require.Equal(t, defaultAPIKeySecretName, cfg.APIKeySecretName)
@@ -202,4 +191,9 @@ func TestHTTPPublicKeyAndHealth(t *testing.T) {
 	rec = httptest.NewRecorder()
 	srv.echo.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = httptest.NewRecorder()
+	srv.echo.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotEmpty(t, rec.Body.Bytes())
 }

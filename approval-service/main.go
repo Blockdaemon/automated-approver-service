@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 
@@ -45,9 +46,6 @@ func (c *ServerConfig) applyDefaults() {
 	if c.SecretManager == "" {
 		c.SecretManager = SecretsManagerLocal
 	}
-	if c.PollInterval == "" {
-		c.PollInterval = "10s"
-	}
 	if c.LogLevel == "" {
 		c.LogLevel = "debug"
 	}
@@ -83,7 +81,7 @@ func run() error {
 		"path to YAML configuration",
 	)
 	genKey := flag.Bool("genkey", false, "print a new P-256 private_key and public_key, then exit")
-	once := flag.Bool("once", false, "poll CWP approvals once and exit")
+	once := flag.Bool("once", false, "process the current pending approvals once and exit")
 	flag.Parse()
 
 	if *genKey {
@@ -101,7 +99,7 @@ func run() error {
 	}
 
 	if *once {
-		return server.pollOnce(context.Background())
+		return server.syncPending(context.Background())
 	}
 
 	if err := server.Serve(); err != nil {

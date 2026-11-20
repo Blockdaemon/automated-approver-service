@@ -1,8 +1,18 @@
 # Automated Approver Service
 
-Reference implementation for testing CWP fetch-based approvals. The service polls pending operations, ECDSA P-256-signs `make transaction`, `transfer`, `call smart contract`, and `deploy smart contract` intents, and posts approve or reject with a `cwp_` API key. Other operation types are skipped. 
+Reference implementation for testing CWP approvals. The service subscribes to the CWP events WebSocket, ECDSA P-256-signs `make transaction`, `transfer`, `call smart contract`, and `deploy smart contract` intents, and posts approve or reject with a `cwp_` API key. Other operation types are skipped. 
 
 Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https://github.com/Blockdaemon/automated-approver-service/releases).
+
+Tagged releases publish linux/amd64, darwin/amd64, and darwin/arm64 binaries. Each binary is published with a SHA-256 checksum, a CycloneDX SBOM, and a keyless Sigstore bundle from the release workflow. The checksum confirms the downloaded bytes. The bundle confirms the file was signed by that workflow for the tag.
+
+```bash
+cosign verify-blob \
+  --bundle automated-approver-service-linux-amd64.bundle \
+  --certificate-identity-regexp '^https://github.com/Blockdaemon/automated-approver-service/\.github/workflows/release\.yml@refs/tags/v.+' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  automated-approver-service-linux-amd64
+```
 
 ## Setup
 
@@ -24,7 +34,6 @@ Copy `[config.yaml](config.yaml)` and fill in `cwp_base_url`, `api_key`, and `pr
 | `private_key` | `CWP_PRIVATE_KEY` | Base64 ASN.1 DER signing key. Used when `secret_manager` is `local` |
 | `api_key_secret_name` | `CWP_API_KEY_SECRET_NAME` | Cloud secret name for the `cwp_` key. Default `approver-service-cwp-api-key` |
 | `private_key_secret_name` | `CWP_PRIVATE_KEY_SECRET_NAME` | Cloud secret name for the signing key. Default `approver-service-tls-private-key` |
-| `poll_interval` | | Go duration, default `10s` |
 | `port` | | Local HTTP for `/public-key` and `/health` (default 9294) |
 | `secret_manager` | | `local`, `secretsmanager` (AWS), or `keyvault` (Azure Key Vault) |
 | `key_vault_url` | `AZURE_KEY_VAULT_URI` | Vault URI when `secret_manager` is `keyvault`, for example `https://example.vault.azure.net/` |
@@ -34,9 +43,15 @@ Copy `[config.yaml](config.yaml)` and fill in `cwp_base_url`, `api_key`, and `pr
 
 The signature verification key is the uncompressed P-256 public key derived from `private_key`. It is not a secret.
 
+### Events
+
+The process opens a WebSocket to `{cwp_base_url}/events` (`/api/cwp/events` on Institutional Vault), authenticated with the same `Authorization: Bearer cwp_...` header as the other calls. It subscribes to `approval_requested` and `approval_cancelled`, and sets `heartbeat=30` so the server pings every 30 seconds.
+
+Events are not replayed. Each connection lists `GET /approvals/list` once so approvals that were already pending are signed. An `approval_requested` event is followed by `GET /approvals/id/{operationID}` and then the same sign and approve or reject path. `approval_cancelled` drops that operation. The socket reconnects with backoff if it closes. `-once` runs the list catch-up and exits without opening the socket.
+
 ### Confirmer-only mode
 
-When `confirmer_only` is true, the service only confirms or approves list entries whose `InitiatorID` matches the bot user email (case-insensitive). Other entries are silently skipped - not rejected - so another approver or human can still act on them.
+When `confirmer_only` is true, the service only confirms or approves entries whose `InitiatorID` matches the bot user email (case-insensitive). The email is the `ID` from `GET /users/me` on `cwp_base_url` (`/api/cwp/users/me` on Institutional Vault). Other entries are silently skipped - not rejected - so another approver or human can still act on them.
 
 This is useful when the bot is the **initiator** and the policy requires the initiator to confirm their own operation before other approvers are asked.
 
