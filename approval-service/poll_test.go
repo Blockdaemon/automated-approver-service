@@ -8,10 +8,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -19,6 +21,7 @@ import (
 
 type fakeApprovalAPI struct {
 	entries []approvalListEntry
+	approve func(context.Context, string, []byte) error
 
 	approvedOp  string
 	approvedSig []byte
@@ -29,7 +32,10 @@ func (f *fakeApprovalAPI) List(context.Context) ([]approvalListEntry, error) {
 	return f.entries, nil
 }
 
-func (f *fakeApprovalAPI) Approve(_ context.Context, operationID string, signature []byte) error {
+func (f *fakeApprovalAPI) Approve(ctx context.Context, operationID string, signature []byte) error {
+	if f.approve != nil {
+		return f.approve(ctx, operationID, signature)
+	}
 	f.approvedOp = operationID
 	f.approvedSig = signature
 	return nil
@@ -152,6 +158,53 @@ func TestPollOnce_ProcessesListedOps(t *testing.T) {
 	s := testServer(t, api)
 	require.NoError(t, s.pollOnce(context.Background()))
 	require.Equal(t, "op-1", api.approvedOp)
+}
+
+// A slow approval must not block unrelated approvals or allow an unbounded batch.
+func TestPollOnce_ConcurrentApprovals(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		api := &fakeApprovalAPI{}
+		for i := range 10 {
+			id := fmt.Sprintf("op-%d", i)
+			intent := fmt.Sprintf(`{"OperationType":"make transaction","OperationID":%q,"InitiatorID":"bot@example.com"}`, id)
+			api.entries = append(api.entries, approvalListEntry{
+				OperationID: id, OperationType: operationTypeMakeTransaction,
+				Intent: base64.StdEncoding.EncodeToString([]byte(intent)),
+			})
+		}
+		started := make(chan string, len(api.entries))
+		releaseOne := make(chan struct{})
+		api.approve = func(ctx context.Context, id string, _ []byte) error {
+			started <- id
+			if id == "op-1" {
+				select {
+				case <-releaseOne:
+					return errors.New("approval request failed")
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		s := testServer(t, api)
+		done := make(chan error, 1)
+		go func() { done <- s.pollOnce(ctx) }()
+		synctest.Wait()
+		require.Len(t, started, 8)
+
+		close(releaseOne)
+		synctest.Wait()
+		require.Len(t, started, 9, "a failed request must free its slot while other approvals are blocked")
+		require.Empty(t, done, "the next poll must wait for this batch")
+
+		cancel()
+		synctest.Wait()
+		require.ErrorIs(t, <-done, context.Canceled)
+		require.Len(t, started, 9, "cancellation must leave the queued approval unprocessed")
+	})
 }
 
 func TestProcessEntry_ConfirmerOnlySkipsOtherInitiator(t *testing.T) {

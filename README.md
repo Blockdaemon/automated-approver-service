@@ -2,6 +2,8 @@
 
 Reference implementation for testing CWP fetch-based approvals. The service polls pending operations, ECDSA P-256-signs `make transaction`, `transfer`, `call smart contract`, and `deploy smart contract` intents, and posts approve or reject with a `cwp_` API key. Other operation types are skipped. 
 
+Each poll processes up to eight approvals concurrently and waits for the batch to finish before polling again. Custom approval checks must be safe to call concurrently.
+
 Download `automated-approver-service-<os>-<arch>` from [GitHub Releases](https://github.com/Blockdaemon/automated-approver-service/releases).
 
 ## Setup

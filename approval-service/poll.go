@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 )
+
+const maxConcurrentApprovals = 8
 
 func (s *Server) pollLoop(ctx context.Context) {
 	s.logger.Info().
@@ -40,16 +43,31 @@ func (s *Server) pollOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var workers sync.WaitGroup
+	slots := make(chan struct{}, maxConcurrentApprovals)
 	for _, entry := range entries {
-		if err := s.processEntry(ctx, entry); err != nil {
-			s.logger.Error().
-				Err(err).
-				Str("operation_id", entry.OperationID).
-				Str("operation_type", entry.OperationType).
-				Msg("failed to process pending approval")
+		select {
+		case <-ctx.Done():
+			workers.Wait()
+			return ctx.Err()
+		case slots <- struct{}{}:
 		}
+		workers.Go(func() {
+			defer func() { <-slots }()
+			if ctx.Err() != nil {
+				return
+			}
+			if err := s.processEntry(ctx, entry); err != nil {
+				s.logger.Error().
+					Err(err).
+					Str("operation_id", entry.OperationID).
+					Str("operation_type", entry.OperationType).
+					Msg("failed to process pending approval")
+			}
+		})
 	}
-	return nil
+	workers.Wait()
+	return ctx.Err()
 }
 
 func (s *Server) processEntry(ctx context.Context, entry approvalListEntry) error {
